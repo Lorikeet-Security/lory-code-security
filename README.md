@@ -23,6 +23,10 @@ how to fix it, and request a retest — without leaving the repo you are fixing.
 
 ---
 
+<img src="/lorikeet-code-sec.png">
+
+---
+
 ## Table of Contents
 
 - [Overview](#overview)
