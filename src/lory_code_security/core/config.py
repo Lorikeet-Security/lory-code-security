@@ -44,6 +44,9 @@ STATE_DIR = Path(".lory_state")
 @dataclass
 class Config:
     base_url: str = "https://lorikeetsecurity.com"
+    #: Chat surface. `public` needs no credentials and is the default: the
+    #: remediation prompt carries the finding, so portal access is not required.
+    #: `portal` additionally loads the ptaas skill context but needs a cookie.
     surface: str = "public"
 
     # Auth. `mcp_token` unlocks the MCP pane and every `lory mcp` command.

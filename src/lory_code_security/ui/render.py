@@ -48,7 +48,7 @@ BLOCK_STYLES = {
 _BAR_CHARS = "▏▎▍▌▋▊▉█"
 
 
-def render_block(block: Block, width: int = 88) -> RenderableType:
+def render_block(block: Block, width: int | None = None) -> RenderableType:
     """Turn one block into something a terminal can show."""
     handler = _HANDLERS.get(block.type)
     if handler is None:
@@ -62,7 +62,7 @@ def render_block(block: Block, width: int = 88) -> RenderableType:
 
 
 def render_reply(
-    blocks: list[Block], suggestions: list[str] | None = None, width: int = 88
+    blocks: list[Block], suggestions: list[str] | None = None, width: int | None = None
 ) -> RenderableType:
     parts: list[RenderableType] = [render_block(b, width) for b in blocks]
     if suggestions:
@@ -78,11 +78,11 @@ def render_suggestions(suggestions: list[str]) -> RenderableType:
 # ── per-block renderers ─────────────────────────────────────────────────────
 
 
-def _text(block: Block, width: int) -> RenderableType:
+def _text(block: Block, width: int | None) -> RenderableType:
     return Text(str(block.get("content", "")), style="white")
 
 
-def _list(block: Block, width: int) -> RenderableType:
+def _list(block: Block, width: int | None) -> RenderableType:
     items = block.get("items") or []
     if not isinstance(items, list):
         return Text(str(items))
@@ -93,7 +93,7 @@ def _list(block: Block, width: int) -> RenderableType:
     return body
 
 
-def _pricing(block: Block, width: int) -> RenderableType:
+def _pricing(block: Block, width: int | None) -> RenderableType:
     body = Text()
     body.append(f"{block.get('price', '?')}", style="bold green")
     timeline = block.get("timeline")
@@ -110,7 +110,7 @@ def _pricing(block: Block, width: int) -> RenderableType:
     )
 
 
-def _link(block: Block, width: int) -> RenderableType:
+def _link(block: Block, width: int | None) -> RenderableType:
     body = Text()
     body.append("🔗 ", style="blue")
     body.append(str(block.get("title", "")), style="bold blue underline")
@@ -121,14 +121,14 @@ def _link(block: Block, width: int) -> RenderableType:
     return body
 
 
-def _cta(block: Block, width: int) -> RenderableType:
+def _cta(block: Block, width: int | None) -> RenderableType:
     body = Text()
     body.append(f"▸ {block.get('label', 'Continue')}", style="bold cyan")
     body.append(f"   {block.get('url', '')}", style="dim")
     return Panel(body, border_style="cyan", width=width)
 
 
-def _table(block: Block, width: int) -> RenderableType:
+def _table(block: Block, width: int | None) -> RenderableType:
     headers = block.get("headers") or []
     rows = block.get("rows") or []
     table = Table(box=None, header_style="bold cyan", pad_edge=False, expand=False)
@@ -140,7 +140,7 @@ def _table(block: Block, width: int) -> RenderableType:
     return table
 
 
-def _chart(block: Block, width: int) -> RenderableType:
+def _chart(block: Block, width: int | None) -> RenderableType:
     """Chart.js has no terminal equivalent, so render a labelled bar gauge."""
     labels = [str(v) for v in (block.get("labels") or [])]
     values: list[float] = []
@@ -155,7 +155,7 @@ def _chart(block: Block, width: int) -> RenderableType:
 
     peak = max(values) or 1.0
     label_width = min(max((len(label) for label in labels), default=6), 22)
-    bar_width = max(10, width - label_width - 16)
+    bar_width = max(10, (width or 72) - label_width - 16)
 
     body = Text()
     for label, value in zip(labels, values, strict=False):
@@ -167,7 +167,7 @@ def _chart(block: Block, width: int) -> RenderableType:
     return Panel(body, title=f"[bold]{title}[/bold]", border_style="magenta", width=width)
 
 
-def _report(block: Block, width: int) -> RenderableType:
+def _report(block: Block, width: int | None) -> RenderableType:
     sections = block.get("sections") or []
     body = Text()
     generated = block.get("generated")
@@ -186,7 +186,7 @@ def _report(block: Block, width: int) -> RenderableType:
     )
 
 
-def _invoice(block: Block, width: int) -> RenderableType:
+def _invoice(block: Block, width: int | None) -> RenderableType:
     body = Text()
     body.append("Lory generated a payable Stripe invoice.\n\n", style="bold yellow")
     body.append(f"{block.get('service', '?')}\n", style="bold white")
@@ -204,7 +204,7 @@ def _invoice(block: Block, width: int) -> RenderableType:
     )
 
 
-def _booking(block: Block, width: int) -> RenderableType:
+def _booking(block: Block, width: int | None) -> RenderableType:
     body = Text("Lory opened a consultation booking.\n", style="bold green")
     context = block.get("context")
     if context:
@@ -212,7 +212,7 @@ def _booking(block: Block, width: int) -> RenderableType:
     return Panel(body, title="[bold green]BOOKING[/bold green]", border_style="green", width=width)
 
 
-def _handoff(block: Block, width: int) -> RenderableType:
+def _handoff(block: Block, width: int | None) -> RenderableType:
     body = Text("Lory escalated this conversation to a human.\n", style="bold red")
     context = block.get("context")
     if context:

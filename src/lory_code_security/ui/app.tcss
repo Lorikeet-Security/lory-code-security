@@ -23,7 +23,6 @@ Screen {
 }
 
 #filter {
-    dock: top;
     border: none;
     background: $panel;
     height: 3;
@@ -49,9 +48,11 @@ Screen {
     padding: 0 1;
 }
 
+/* Long unbreakable output must wrap, never scroll the pane sideways. */
 #detail {
     height: 1fr;
     padding: 0 1;
+    overflow-x: hidden;
 }
 
 /* ── right: Lory ────────────────────────────────────────────────────────── */
@@ -70,6 +71,7 @@ Screen {
 #lory-log {
     height: 1fr;
     padding: 0 1;
+    overflow-x: hidden;
 }
 
 #lory-input {

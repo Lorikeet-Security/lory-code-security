@@ -108,7 +108,8 @@ def init(config_path: str, base_url: str | None, token: str | None, force: bool)
     surface = "portal"
     session_cookie = None
     if click.confirm(
-        "Add a portal session cookie now? (needed for finding-aware chat answers)",
+        "Add a portal session cookie? Optional — only needed for SARIF export "
+        "and attestation letters",
         default=False,
     ):
         session_cookie = click.prompt("PHPSESSID value", hide_input=True).strip() or None
@@ -122,8 +123,8 @@ def init(config_path: str, base_url: str | None, token: str | None, force: bool)
     console.print(f"[dim]  repo_root: {repo_root}[/dim]")
     if surface == "public":
         console.print(
-            "[dim]  surface: public — set surface: portal and a session_cookie later "
-            "for remediation answers grounded in your engagement.[/dim]"
+            "[dim]  surface: public — remediation prompts carry the finding, so "
+            "this needs no cookie.[/dim]"
         )
     console.print("\nNext: [bold]lory doctor[/bold], then [bold]lory tui[/bold]")
 
@@ -189,13 +190,21 @@ def doctor(config_path: str) -> None:
             console.print(f"[red]✗[/red] MCP: {exc}")
             ok = False
 
-    if cfg.surface == "portal" and not cfg.session_cookie:
-        console.print("[red]✗[/red] surface is portal but no session_cookie is set")
-        ok = False
-    elif cfg.surface == "public":
+    # The bearer token is sufficient on its own. A session cookie only adds the
+    # portal-only extras, so its absence is informational, never a failure.
+    if cfg.session_cookie:
+        console.print("[green]✓[/green] Session cookie set: SARIF export and "
+                      "attestation letters available")
+    else:
         console.print(
-            "[yellow]![/yellow] Chat surface is [bold]public[/bold] — the sales persona, "
-            "with no access to your findings. Set surface: portal for remediation work."
+            "[dim]  No session_cookie. Everything runs on the bearer token; "
+            "only `lory portal export` (SARIF) and attestation letters need one.[/dim]"
+        )
+    if cfg.surface == "portal" and not cfg.session_cookie:
+        console.print(
+            "[yellow]![/yellow] surface is portal but no session_cookie is set — "
+            "chat will fall back to the public surface (the finding is still "
+            "carried in the prompt)"
         )
 
     console.print(

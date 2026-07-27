@@ -53,16 +53,16 @@ def main() -> None:
       harness    Run YAML scenarios against Lory (regression + guardrail tests).
 
     \b
-    \b
     ──────────────────────────────────────────────────────────────────────────
     HOW IT READS YOUR FINDINGS
     ──────────────────────────────────────────────────────────────────────────
     Two paths, both scoped to your company by the platform:
 
-      portal   findings-export.php over a dashboard session cookie. Full
-               bodies, up to 5000 findings, SARIF. Preferred when configured.
-      mcp      findings.list over a lkmcp_ bearer token. Capped at 50 rows,
-               no bodies until findings.get. Works headless, good for CI.
+      mcp      findings.list / findings.get over a lkmcp_ bearer token. This
+               is all you need: it works headless and drives every command.
+      portal   findings-export.php over a dashboard session cookie. OPTIONAL.
+               Adds full bodies in one call, SARIF export, and attestation
+               letters. Used automatically when a cookie is configured.
 
     \b
     ──────────────────────────────────────────────────────────────────────────

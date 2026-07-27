@@ -53,7 +53,9 @@ def fix(
         include_code=include_code, max_context_lines=cfg.max_context_lines,
         question=question,
     )
-    surface, warning = remediate.recommended_surface(cfg.surface)
+    surface, warning = remediate.recommended_surface(
+        cfg.surface, has_session_cookie=bool(cfg.session_cookie)
+    )
     request.surface = surface
 
     console.print(render.render_finding_header(finding))

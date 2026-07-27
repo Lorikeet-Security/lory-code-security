@@ -399,7 +399,9 @@ class LoryApp(App[None]):
     @work(thread=True, group="lory")
     def lory_worker(self, message: str) -> None:
         if self.conversation is None:
-            surface, warning = remediate.recommended_surface(self.cfg.surface)
+            surface, warning = remediate.recommended_surface(
+                self.cfg.surface, has_session_cookie=bool(self.cfg.session_cookie)
+            )
             self.conversation = Conversation(ChatClient(self.cfg, surface))
             if warning:
                 self.call_from_thread(self._lory_write, Text(warning, style="yellow"))

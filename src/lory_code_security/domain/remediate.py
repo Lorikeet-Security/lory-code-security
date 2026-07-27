@@ -62,20 +62,32 @@ class RemediationRequest:
         return ", ".join(bits)
 
 
-def recommended_surface(configured: str) -> tuple[str, str | None]:
-    """Return ``(surface, warning)`` for remediation work.
+def recommended_surface(
+    configured: str, has_session_cookie: bool = False
+) -> tuple[str, str | None]:
+    """Pick the chat surface for remediation. Returns ``(surface, note)``.
 
-    The public endpoint answers as a salesperson with no access to your
-    findings, so an answer from it is worth much less. This does not force the
-    switch — it reports the problem and lets the caller decide.
+    **The bearer token is enough.** Lory does not need portal access to answer a
+    remediation question, because :func:`build_prompt` carries the finding into
+    the message itself — title, severity, CWE, description, evidence — alongside
+    the knowledge base entries fetched over MCP. The public endpoint answers
+    that perfectly well.
+
+    The portal surface is a mild upgrade when a dashboard session cookie happens
+    to be configured, because it additionally loads the ptaas skill context. It
+    is never a requirement: the portal AJAX endpoints authenticate only by PHP
+    session (``ajax_require_auth``), so asking for that surface without a cookie
+    is a guaranteed 401, and we downgrade instead of failing.
     """
     if configured == "portal":
-        return "portal", None
-    return configured, (
-        "asking the public sales surface — it has no access to your findings or "
-        "project context. Set surface: portal (and a session_cookie) for answers "
-        "grounded in your engagement."
-    )
+        if has_session_cookie:
+            return "portal", None
+        return "public", (
+            "no session_cookie set, so this went to the public chat surface. "
+            "The finding and its knowledge base entries are carried in the "
+            "prompt, so the answer is still grounded in this finding."
+        )
+    return "public", None
 
 
 def build_prompt(
