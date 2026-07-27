@@ -26,10 +26,15 @@ from lory_code_security.core.errors import AuthError, ProtocolError, ToolError, 
 
 PROTOCOL_VERSION = "2025-06-18"
 
-#: Tools the server exposes today, by the scope that unlocks them. Used to
-#: explain a scope denial without a round trip.
+#: Tools this client uses, by the scope that unlocks them. Used to explain a
+#: scope denial without a round trip.
+#:
+#: Deliberately not exhaustive: the server may expose more than this, and
+#: ``list_tools()`` is always the authority. Legacy tools are left out rather
+#: than listed, so nothing here points a user at a surface that is on its way
+#: out.
 SCOPE_CATALOG: dict[str, tuple[str, ...]] = {
-    "findings:read": ("findings.list", "findings.get", "asm.assets", "scope.check"),
+    "findings:read": ("findings.list", "findings.get", "scope.check"),
     "findings:write": ("findings.create", "engagement.update"),
     "kb:read": ("kb.search",),
     "compliance:read": ("compliance.frameworks", "compliance.controls"),
