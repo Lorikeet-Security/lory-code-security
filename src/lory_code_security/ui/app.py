@@ -208,24 +208,35 @@ class LoryApp(App[None]):
         self.call_from_thread(self.set_findings, rows, self.store.last_source)
 
     def _explain_empty(self) -> str:
-        """Why an empty list is empty. A blank pane just wastes the user's time."""
+        """Why an empty list is empty. A blank pane just wastes the user's time.
+
+        The platform keeps findings in more than one store, and the two read
+        paths do not cover the same ground, so "no rows" usually means "wrong
+        path" rather than "nothing to fix".
+        """
         lines: list[str] = []
 
         # A stale cookie degrades to MCP silently. Say so rather than letting
         # the user wonder why this looks thinner than the portal.
-        if self.store is not None and self.store.portal is not None \
-                and self.store.last_source != "portal":
+        if (
+            self.store is not None
+            and self.store.portal is not None
+            and self.store.last_source != "portal"
+        ):
             lines.append(
-                "The portal export was unavailable (stale session_cookie), so this "
-                "fell back to MCP."
+                "The portal export was unavailable (the session_cookie looks "
+                "stale), so this fell back to MCP."
             )
 
         if self.store is not None and self.store.last_source == "mcp":
             lines.append(
-                "MCP's findings.list only exposes the pentest_findings table. "
-                "ASM and Lory-engine findings live in asm_findings, which the MCP "
-                "server does not expose — today those are reachable only through "
-                "the portal export, which needs a valid session_cookie."
+                "MCP's findings.list reads one finding store. Engagement findings "
+                "are written to a different one, and incident findings to a third, "
+                "so an empty list here does not mean the account is clean."
+            )
+            lines.append(
+                "The portal export reaches the engagement findings. Refresh the "
+                "session_cookie and press r."
             )
 
         return "\n\n".join(lines) or "This account has no findings on this read path."

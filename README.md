@@ -103,7 +103,7 @@ the portal and falls back to MCP.
 │                                                                        │
 │   Lory pentest engine ──┐                                              │
 │   Lorikeet testers    ──┼──▶  findings  ──▶  human review gate         │
-│   ASM scanners        ──┘                          │                   │
+│   incident response   ──┘                          │                   │
 │                                                    ▼                   │
 │                                            published to your portal    │
 └──────────────────┬──────────────────────────────────┬──────────────────┘
@@ -140,6 +140,13 @@ the portal and falls back to MCP.
 Unreviewed AI findings are never returned on either path — the export applies
 the same `review_state` gate the portal reads through, so this tool cannot see a
 finding a human has not approved.
+
+> **The two paths do not cover the same ground.** The platform keeps findings in
+> more than one store: engagement findings from Lory's engine, manual pentest
+> findings, and incident-response findings each live separately. MCP's
+> `findings.list` reads one of them; the portal export reads another. An empty
+> list therefore usually means *wrong path*, not *nothing to fix* — the TUI says
+> which path it used and what it does not cover.
 
 ### The remediation loop
 

@@ -314,7 +314,7 @@ class FindingStore:
         return result.structured if isinstance(result.structured, dict) else {"raw": result.text}
 
     def search_kb(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """Look the finding class up in the ASM vulnerability knowledge base."""
+        """Look the finding class up in the vulnerability knowledge base."""
         if self.client is None:
             return []
         try:

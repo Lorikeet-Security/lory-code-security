@@ -39,7 +39,7 @@ REVIEW_PATH = "/ptaas/dashboard/ajax/lory-findings-review.php"
 
 EXPORT_FORMATS = ("json", "csv", "sarif")
 #: ``all`` covers both; ``ai`` is what Lory's engine produced, ``pentest`` is
-#: everything else (manual testing and ASM).
+#: everything else on that store (manual testing and older imports).
 FINDING_SOURCES = ("all", "ai", "pentest")
 
 
