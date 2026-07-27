@@ -90,9 +90,10 @@ def test_mcp_steps_imply_requires_mcp(tmp_path):
     assert load_scenario(path).requires_mcp
 
 
-def test_portal_surface_implies_requires_portal(tmp_path):
+def test_a_retired_surface_key_is_ignored_not_fatal(tmp_path):
+    """Scenarios written for the two-surface era must still parse."""
     path = write(tmp_path, {"name": "x", "surface": "portal", "steps": [{"chat": "a"}]})
-    assert load_scenario(path).requires_portal
+    assert load_scenario(path).steps[0].kind == "chat"
 
 
 def test_loading_a_directory_finds_every_scenario(tmp_path):

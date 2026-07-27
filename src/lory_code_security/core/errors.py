@@ -16,7 +16,7 @@ class TransportError(LoryConsoleError):
 
 
 class AuthError(LoryConsoleError):
-    """The MCP token or portal session cookie was rejected."""
+    """The MCP bearer token was rejected."""
 
 
 class ProtocolError(LoryConsoleError):
@@ -24,7 +24,7 @@ class ProtocolError(LoryConsoleError):
 
 
 class PaywallError(LoryConsoleError):
-    """The portal chat free-message cap was hit for this session."""
+    """Lory's free-message cap was hit for this session."""
 
     def __init__(self, message: str, used: int | None = None, limit: int | None = None) -> None:
         super().__init__(message)

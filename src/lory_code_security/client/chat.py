@@ -1,13 +1,12 @@
-"""Client for Lory's conversational surfaces.
+"""Client for Lory's chat endpoint.
 
-Two endpoints, one payload shape:
+``/ptaas/ajax/lory-public.php`` — no credential, IP rate limited.
 
-===========  ==========================================  ==================
-surface      path                                        auth
-===========  ==========================================  ==================
-``public``   ``/ptaas/ajax/lory-public.php``             none (IP rate limit)
-``portal``   ``/ptaas/ajax/lory-chat.php``               dashboard session cookie
-===========  ==========================================  ==================
+The dashboard's own chat endpoint authenticates by PHP session and has no token
+auth, so a bearer-token client cannot reach it. That is not a loss for this
+tool: the remediation prompt carries the finding, its evidence, and its
+knowledge base entries into the message, so the answer is grounded in the
+finding regardless of which endpoint answers.
 
 Request::
 
@@ -78,12 +77,11 @@ class ChatReply:
 
 
 class ChatClient:
-    """Talks to one chat surface. Holds no conversation state itself."""
+    """Talks to the chat endpoint. Holds no conversation state itself."""
 
-    def __init__(self, cfg: Config, surface: str | None = None) -> None:
+    def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self.surface = surface or cfg.surface
-        self.url = cfg.chat_url(self.surface)
+        self.url = cfg.chat_url()
 
     # ── plumbing ────────────────────────────────────────────────────────────
 
@@ -93,8 +91,6 @@ class ChatClient:
             "Accept": "text/event-stream" if stream else "application/json",
             "User-Agent": _user_agent(),
         }
-        if self.surface == "portal" and self.cfg.session_cookie:
-            headers["Cookie"] = f"{self.cfg.session_cookie_name}={self.cfg.session_cookie}"
         return headers
 
     def _payload(self, message: str, history: list[dict[str, str]], stream: bool) -> dict[str, Any]:
@@ -151,7 +147,7 @@ class ChatClient:
             raise TransportError(f"{self.url}: {exc}") from exc
 
         elapsed = (time.perf_counter() - started) * 1000
-        _raise_for_auth(resp, self.surface)
+        _raise_for_auth(resp)
 
         try:
             data = resp.json()
@@ -187,7 +183,7 @@ class ChatClient:
                     headers=self._headers(stream=True),
                     json=self._payload(message, history or [], stream=True),
                 ) as resp:
-                    _raise_for_auth(resp, self.surface)
+                    _raise_for_auth(resp)
 
                     content_type = resp.headers.get("content-type", "")
                     if "text/event-stream" not in content_type:
@@ -285,14 +281,8 @@ def _user_agent() -> str:
     return f"lory-code-security/{__version__}"
 
 
-def _raise_for_auth(resp: httpx.Response, surface: str) -> None:
+def _raise_for_auth(resp: httpx.Response) -> None:
     if resp.status_code in (401, 403):
-        if surface == "portal":
-            raise AuthError(
-                "portal chat rejected the session cookie (HTTP "
-                f"{resp.status_code}). Log into the dashboard in a browser and "
-                "copy a fresh PHPSESSID into session_cookie."
-            )
         raise AuthError(f"chat endpoint returned HTTP {resp.status_code}")
     if resp.status_code >= 500:
         raise TransportError(f"chat endpoint returned HTTP {resp.status_code}")

@@ -57,20 +57,23 @@ def test_non_mapping_yaml_raises_config_error(tmp_path):
 def test_urls_are_built_from_the_documented_paths():
     cfg = Config(base_url="https://x.example")
     assert cfg.mcp_url() == "https://x.example/ptaas/mcp/"
-    assert cfg.chat_url("public").endswith("/ptaas/ajax/lory-public.php")
-    assert cfg.chat_url("portal").endswith("/ptaas/ajax/lory-chat.php")
+    assert cfg.chat_url().endswith("/ptaas/ajax/lory-public.php")
+
+
+def test_retired_keys_are_reported_not_rejected(tmp_path):
+    """A config from the session-cookie era must still load."""
+    path = write(tmp_path, {
+        "base_url": "https://x.example",
+        "session_cookie": "abc",
+        "surface": "portal",
+    })
+    cfg = load(path)
+    assert set(cfg.retired_keys) >= {"session_cookie", "surface"}
+    assert not [e for e in cfg.validate() if "session_cookie" in e]
 
 
 def test_trailing_slash_does_not_double_up():
     assert Config(base_url="https://x.example/").mcp_url() == "https://x.example/ptaas/mcp/"
-
-
-def test_portal_surface_requires_a_session_cookie(tmp_path):
-    cfg = Config(base_url="https://x.example", surface="portal", repo_root=tmp_path)
-    assert any("session_cookie" in e for e in cfg.validate())
-
-    cfg.session_cookie = "abc123"
-    assert not any("session_cookie" in e for e in cfg.validate())
 
 
 def test_plaintext_http_to_a_remote_host_is_rejected(tmp_path):

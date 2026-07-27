@@ -104,28 +104,9 @@ def init(config_path: str, base_url: str | None, token: str | None, force: bool)
         console.print("[dim]  No retest:request scope; `lory retest` will not work.[/dim]")
 
     repo_root = detect_repo_root()
-    console.print()
-    surface = "portal"
-    session_cookie = None
-    if click.confirm(
-        "Add a portal session cookie? Optional — only needed for SARIF export "
-        "and attestation letters",
-        default=False,
-    ):
-        session_cookie = click.prompt("PHPSESSID value", hide_input=True).strip() or None
-    else:
-        surface = "public"
-
-    onboarding.write_config(
-        path, creds, surface=surface, session_cookie=session_cookie, repo_root=str(repo_root)
-    )
-    console.print(f"\n[green]✓[/green] Wrote [bold]{path}[/bold] (mode 0600)")
+    onboarding.write_config(path, creds, repo_root=str(repo_root))
+    console.print(f"\n[green]\u2713[/green] Wrote [bold]{path}[/bold] (mode 0600)")
     console.print(f"[dim]  repo_root: {repo_root}[/dim]")
-    if surface == "public":
-        console.print(
-            "[dim]  surface: public — remediation prompts carry the finding, so "
-            "this needs no cookie.[/dim]"
-        )
     console.print("\nNext: [bold]lory doctor[/bold], then [bold]lory tui[/bold]")
 
 
@@ -190,21 +171,11 @@ def doctor(config_path: str) -> None:
             console.print(f"[red]✗[/red] MCP: {exc}")
             ok = False
 
-    # The bearer token is sufficient on its own. A session cookie only adds the
-    # portal-only extras, so its absence is informational, never a failure.
-    if cfg.session_cookie:
-        console.print("[green]✓[/green] Session cookie set: SARIF export and "
-                      "attestation letters available")
-    else:
+    if cfg.retired_keys:
         console.print(
-            "[dim]  No session_cookie. Everything runs on the bearer token; "
-            "only `lory portal export` (SARIF) and attestation letters need one.[/dim]"
-        )
-    if cfg.surface == "portal" and not cfg.session_cookie:
-        console.print(
-            "[yellow]![/yellow] surface is portal but no session_cookie is set — "
-            "chat will fall back to the public surface (the finding is still "
-            "carried in the prompt)"
+            f"[yellow]![/yellow] {config_path} still carries keys this version "
+            f"no longer reads: {', '.join(cfg.retired_keys)}. Harmless, but you "
+            "can delete them."
         )
 
     console.print(

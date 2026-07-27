@@ -103,10 +103,10 @@ class Runner:
 
         self.on_event("scenario_start", scenario)
 
-        conversations: dict[str, Conversation] = {}
+        conversation: Conversation | None = None
         try:
             for step in scenario.steps:
-                step_result = self._run_step(step, scenario, conversations)
+                step_result, conversation = self._run_step(step, conversation)
                 result.steps.append(step_result)
                 self.on_event("step_done", step_result)
         except LoryConsoleError as exc:
@@ -121,16 +121,17 @@ class Runner:
     # ── steps ───────────────────────────────────────────────────────────────
 
     def _run_step(
-        self,
-        step: Step,
-        scenario: Scenario,
-        conversations: dict[str, Conversation],
-    ) -> StepResult:
+        self, step: Step, conversation: Conversation | None
+    ) -> tuple[StepResult, Conversation | None]:
         self.on_event("step_start", step)
         started = time.perf_counter()
 
         if step.kind == "chat":
-            observation = self._observe_chat(step, scenario, conversations)
+            if conversation is None:
+                conversation = Conversation(ChatClient(self.cfg))
+            if step.fresh:
+                conversation.clear()
+            observation = self._observe_chat(step, conversation)
         else:
             observation = self._observe_mcp(step)
 
@@ -144,22 +145,12 @@ class Runner:
         if not checks:
             checks = [run_check("ok", observation, {})]
 
-        return StepResult(step=step, observation=observation, checks=checks, elapsed_ms=elapsed)
+        return (
+            StepResult(step=step, observation=observation, checks=checks, elapsed_ms=elapsed),
+            conversation,
+        )
 
-    def _observe_chat(
-        self,
-        step: Step,
-        scenario: Scenario,
-        conversations: dict[str, Conversation],
-    ) -> Observation:
-        surface = step.surface or scenario.surface
-        conversation = conversations.get(surface)
-        if conversation is None:
-            conversation = Conversation(ChatClient(self.cfg, surface))
-            conversations[surface] = conversation
-        if step.fresh:
-            conversation.clear()
-
+    def _observe_chat(self, step: Step, conversation: Conversation) -> Observation:
         try:
             reply = conversation.send(step.target, stream=self.stream)
         except LoryConsoleError as exc:
@@ -214,8 +205,6 @@ class Runner:
     def _skip_reason(self, scenario: Scenario) -> str | None:
         if scenario.requires_mcp and not self.cfg.has_mcp():
             return "no mcp_token configured"
-        if scenario.requires_portal and not self.cfg.session_cookie:
-            return "no session_cookie configured"
         return None
 
 

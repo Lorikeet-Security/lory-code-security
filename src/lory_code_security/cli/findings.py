@@ -11,6 +11,7 @@ import csv
 import io
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.syntax import Syntax
@@ -110,12 +111,22 @@ def findings_show(finding_id: int, config_path: str, as_json: bool) -> None:
 
 @findings.command("export")
 @CONFIG_OPTION
-@click.option("--format", "fmt", type=click.Choice(["json", "csv", "markdown"]),
+@click.option("--format", "fmt", type=click.Choice(["json", "csv", "markdown", "sarif"]),
               default="json", show_default=True)
 @click.option("--out", type=click.Path(dir_okay=False, path_type=Path), help="Write to a file.")
 @click.option("--cached", is_flag=True, help="Export the local cache without refetching.")
 def findings_export(config_path: str, fmt: str, out: Path | None, cached: bool) -> None:
-    """Export findings as JSON, CSV, or Markdown."""
+    """Export findings as JSON, CSV, Markdown, or SARIF.
+
+    SARIF is generated locally from the findings this tool read, so it needs
+    only the bearer token:
+
+    \b
+      lory findings export --format sarif --out findings.sarif
+      gh api --method POST /repos/:owner/:repo/code-scanning/sarifs \\
+        -f commit_sha="$(git rev-parse HEAD)" -f ref="refs/heads/main" \\
+        -f sarif="$(gzip -c findings.sarif | base64 -w0)"
+    """
     cfg = load_config(config_path)
     store = open_store(cfg, allow_offline=cached)
 
@@ -254,7 +265,70 @@ def retest(finding_id: int, config_path: str, note: str, yes: bool) -> None:
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 
+#: SARIF has three levels; map the five severities onto them.
+_SARIF_LEVEL = {
+    "critical": "error", "high": "error",
+    "medium": "warning", "low": "note", "info": "note",
+}
+
+
+def _sarif(rows: list[Finding]) -> str:
+    """SARIF 2.1.0, the format GitHub code scanning and Defender ingest."""
+    from lory_code_security import __version__
+
+    seen: dict[str, dict[str, Any]] = {}
+    results = []
+    for finding in rows:
+        rule_id = finding.cwe_id or finding.category or "lorikeet-finding"
+        if rule_id not in seen:
+            seen[rule_id] = {
+                "id": rule_id,
+                "name": finding.category or "SecurityFinding",
+                "shortDescription": {"text": finding.category or rule_id},
+                "defaultConfiguration": {
+                    "level": _SARIF_LEVEL.get(finding.severity, "warning")
+                },
+            }
+        results.append({
+            "ruleId": rule_id,
+            "level": _SARIF_LEVEL.get(finding.severity, "warning"),
+            "message": {"text": f"{finding.title}\n\n{finding.description}".strip()},
+            "properties": {
+                "ref": finding.ref or str(finding.id),
+                "severity": finding.severity,
+                "cvss_score": finding.cvss_score,
+                "affected_asset": finding.affected_asset,
+                "store": finding.store,
+            },
+            # No file/line: findings are about a deployed asset, not a source
+            # location. `lory trace` is what maps one onto local code, and
+            # guessing a path here would put a wrong annotation on a PR.
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {"uri": finding.affected_asset or "unknown"}
+                }
+            }],
+        })
+
+    return json.dumps({
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "Lorikeet Security",
+                "informationUri": "https://lorikeetsecurity.com",
+                "version": __version__,
+                "rules": list(seen.values()),
+            }},
+            "results": results,
+        }],
+    }, indent=2)
+
+
 def _export(rows: list[Finding], fmt: str) -> str:
+    if fmt == "sarif":
+        return _sarif(rows)
+
     if fmt == "json":
         return json.dumps([f.to_dict() for f in rows], indent=2)
 

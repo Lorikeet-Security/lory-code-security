@@ -12,7 +12,6 @@ from lory_code_security.domain.remediate import (
     MAX_PROMPT_CHARS,
     build_prompt,
     kb_query,
-    recommended_surface,
     verification_prompt,
 )
 
@@ -105,30 +104,6 @@ def test_secrets_in_evidence_are_redacted():
     prompt = build_prompt(finding).prompt
     assert "EXAMPLE0000NOT0000A0000REAL0000KEY0000" not in prompt
     assert "REDACTED" in prompt
-
-
-def test_portal_is_used_when_a_cookie_exists():
-    surface, note = recommended_surface("portal", has_session_cookie=True)
-    assert surface == "portal"
-    assert note is None
-
-
-def test_portal_without_a_cookie_downgrades_instead_of_401ing():
-    """The portal AJAX endpoints authenticate only by PHP session.
-
-    Asking for that surface with no cookie is a guaranteed 401, so we fall
-    back to the public endpoint and say why, rather than failing the request.
-    """
-    surface, note = recommended_surface("portal", has_session_cookie=False)
-    assert surface == "public"
-    assert note and "session_cookie" in note
-
-
-def test_public_needs_no_credentials_and_no_warning():
-    """The bearer token is enough: build_prompt carries the finding itself."""
-    surface, note = recommended_surface("public")
-    assert surface == "public"
-    assert note is None
 
 
 def test_kb_query_combines_title_and_cwe():

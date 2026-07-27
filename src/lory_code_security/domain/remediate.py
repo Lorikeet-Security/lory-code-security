@@ -1,8 +1,7 @@
 """Turn a finding into a remediation question for Lory.
 
 The flow is: take a finding, optionally attach local code leads and knowledge
-base entries, build one prompt, send it to a Lory chat surface, and render the
-answer.
+base entries, build one prompt, send it to Lory, and render the answer.
 
 Two things this module is careful about:
 
@@ -12,10 +11,10 @@ passes ``include_code=True`` (config ``send_code_context``, CLI ``--code``).
 CLI can show it before anything is transmitted. There is no hidden path that
 uploads source.
 
-**Which surface answers.** The public endpoint runs a sales persona and knows
-nothing about your findings. Remediation should go to the ``portal`` surface,
-which loads the ptaas skill context. :func:`recommended_surface` says so, and
-callers warn when falling back.
+**What the model is told.** Lory's chat endpoint has no access to your
+engagement, so everything it needs is put in the message: the finding, its
+evidence, and the knowledge base entries fetched over MCP. That is what keeps
+the answer grounded in *this* finding rather than generic advice.
 """
 
 from __future__ import annotations
@@ -43,14 +42,13 @@ class RemediationRequest:
 
     finding: Finding
     prompt: str
-    surface: str
     included_code: bool = False
     code_files: list[str] = field(default_factory=list)
     kb_titles: list[str] = field(default_factory=list)
     truncated: bool = False
 
     def describe(self) -> str:
-        bits = [f"surface={self.surface}", f"{len(self.prompt)} chars"]
+        bits = [f"{len(self.prompt)} chars"]
         if self.included_code:
             bits.append(f"{len(self.code_files)} file(s) of source attached")
         else:
@@ -60,34 +58,6 @@ class RemediationRequest:
         if self.truncated:
             bits.append("TRUNCATED to fit the 2000-char limit")
         return ", ".join(bits)
-
-
-def recommended_surface(
-    configured: str, has_session_cookie: bool = False
-) -> tuple[str, str | None]:
-    """Pick the chat surface for remediation. Returns ``(surface, note)``.
-
-    **The bearer token is enough.** Lory does not need portal access to answer a
-    remediation question, because :func:`build_prompt` carries the finding into
-    the message itself — title, severity, CWE, description, evidence — alongside
-    the knowledge base entries fetched over MCP. The public endpoint answers
-    that perfectly well.
-
-    The portal surface is a mild upgrade when a dashboard session cookie happens
-    to be configured, because it additionally loads the ptaas skill context. It
-    is never a requirement: the portal AJAX endpoints authenticate only by PHP
-    session (``ajax_require_auth``), so asking for that surface without a cookie
-    is a guaranteed 401, and we downgrade instead of failing.
-    """
-    if configured == "portal":
-        if has_session_cookie:
-            return "portal", None
-        return "public", (
-            "no session_cookie set, so this went to the public chat surface. "
-            "The finding and its knowledge base entries are carried in the "
-            "prompt, so the answer is still grounded in this finding."
-        )
-    return "public", None
 
 
 def build_prompt(
@@ -161,7 +131,6 @@ def build_prompt(
     return RemediationRequest(
         finding=finding,
         prompt=prompt,
-        surface="",  # filled in by the caller once it picks one
         included_code=bool(code_section) and not truncated,
         code_files=code_files,
         kb_titles=kb_titles,

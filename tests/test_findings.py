@@ -1,4 +1,4 @@
-"""Normalisation across the two read paths, plus local triage state."""
+"""Normalisation across the MCP read paths, plus local triage state."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 
 from lory_code_security.domain.findings import (
     Finding,
+    FindingStore,
     TriageLog,
     cwe_number,
     filter_findings,
@@ -25,8 +26,8 @@ MCP_ROW = {
     "cvss_score": 6.1,
 }
 
-# What the portal export returns: nested cvss and provenance, full body.
-PORTAL_ROW = {
+# What findings.search / findings.detail return: nested cvss and provenance.
+SEARCH_DETAIL_ROW = {
     "id": 12,
     "title": "Reflected XSS in search",
     "severity": "high",
@@ -52,8 +53,8 @@ def test_mcp_row_normalises():
     assert not finding.is_detailed  # list view has no body
 
 
-def test_portal_row_flattens_nested_cvss_and_provenance():
-    finding = Finding.from_row(PORTAL_ROW)
+def test_nested_cvss_and_provenance_are_flattened():
+    finding = Finding.from_row(SEARCH_DETAIL_ROW)
     assert finding.cvss_score == 6.1
     assert finding.cvss_vector.startswith("CVSS:3.1/")
     assert finding.cwe_id == "CWE-79"
@@ -65,7 +66,7 @@ def test_portal_row_flattens_nested_cvss_and_provenance():
 
 
 def test_both_paths_agree_on_the_shared_fields():
-    a, b = Finding.from_row(MCP_ROW), Finding.from_row(PORTAL_ROW)
+    a, b = Finding.from_row(MCP_ROW), Finding.from_row(SEARCH_DETAIL_ROW)
     for field in ("id", "title", "severity", "affected_asset", "cwe_id", "cvss_score"):
         assert getattr(a, field) == getattr(b, field), field
 
@@ -96,7 +97,7 @@ def test_unknown_severity_sorts_last():
 
 
 def test_filter_matches_title_asset_cwe_and_id():
-    rows = [Finding.from_row(PORTAL_ROW), Finding(id=99, title="Open redirect")]
+    rows = [Finding.from_row(SEARCH_DETAIL_ROW), Finding(id=99, title="Open redirect")]
     assert len(filter_findings(rows, query="xss")) == 1
     assert len(filter_findings(rows, query="app.example.com")) == 1
     assert len(filter_findings(rows, query="CWE-79")) == 1
@@ -152,4 +153,92 @@ def test_triage_survives_a_corrupt_file(tmp_path):
 
 
 def test_to_dict_is_json_serialisable():
-    json.dumps(Finding.from_row(PORTAL_ROW).to_dict())
+    json.dumps(Finding.from_row(SEARCH_DETAIL_ROW).to_dict())
+
+
+# ── read-path selection ─────────────────────────────────────────────────────
+
+
+class FakeMcp:
+    """Minimal McpClient stand-in: records calls, serves canned rows."""
+
+    def __init__(self, tools: set[str], rows: list[dict] | None = None) -> None:
+        self._tools = tools
+        self._rows = rows or []
+        self.calls: list[tuple[str, dict]] = []
+
+    def has_tool(self, name: str) -> bool:
+        return name in self._tools
+
+    def call_tool(self, name: str, args: dict):
+        self.calls.append((name, args))
+
+        class Result:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def rows(self):
+                return self._rows
+
+            @property
+            def structured(self):
+                return self._rows[0] if self._rows else {}
+
+        return Result(self._rows)
+
+
+SEARCH_ROW = {
+    "ref": "engagement-12",
+    "store": "engagement",
+    "id": 12,
+    "title": "SQL injection",
+    "severity": "Critical",
+    "status": "Open",
+    "affected_asset": "app.example.com",
+}
+
+
+def test_search_is_preferred_when_the_server_has_it(tmp_path):
+    """The merged path needs only the bearer token, so it wins."""
+    client = FakeMcp({"findings.search", "findings.list"}, [SEARCH_ROW])
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+
+    rows = store.fetch()
+
+    assert [c[0] for c in client.calls] == ["findings.search"]
+    assert store.last_source == "mcp:search"
+    assert rows[0].ref == "engagement-12"
+    assert rows[0].store == "engagement"
+
+
+def test_falls_back_to_findings_list_on_an_older_server(tmp_path):
+    """A server without the merged tool must still work, just narrower."""
+    client = FakeMcp({"findings.list"}, [{"id": 5, "title": "x", "severity": "high"}])
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+
+    store.fetch()
+
+    assert [c[0] for c in client.calls] == ["findings.list"]
+    assert store.last_source == "mcp"
+
+
+def test_detail_routes_by_ref_when_available(tmp_path):
+    detail_row = dict(SEARCH_ROW, description="body", evidence="proof")
+    client = FakeMcp({"findings.search", "findings.detail"}, [detail_row])
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+    store.fetch()
+
+    finding = store.detail(12, refresh=True)
+
+    assert client.calls[-1] == ("findings.detail", {"ref": "engagement-12"})
+    assert finding.is_detailed
+
+
+def test_detail_falls_back_to_findings_get_without_the_tool(tmp_path):
+    client = FakeMcp({"findings.list"}, [{"id": 5, "title": "x", "description": "d"}])
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+    store.fetch()
+
+    store.detail(5, refresh=True)
+
+    assert client.calls[-1] == ("findings.get", {"id": 5})

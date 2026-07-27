@@ -177,8 +177,6 @@ def verify(creds: Credentials, timeout: float = 30.0, verify_tls: bool = True) -
 def write_config(
     path: Path,
     creds: Credentials,
-    surface: str = "portal",
-    session_cookie: str | None = None,
     repo_root: str | None = None,
 ) -> Path:
     """Write config.yml with 0600 permissions.
@@ -189,10 +187,7 @@ def write_config(
     document: dict[str, Any] = {
         "base_url": creds.base_url,
         "mcp_token": creds.token,
-        "surface": surface,
     }
-    if session_cookie:
-        document["session_cookie"] = session_cookie
     if repo_root:
         document["repo_root"] = repo_root
 

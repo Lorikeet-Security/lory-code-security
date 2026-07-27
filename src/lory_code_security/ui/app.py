@@ -115,9 +115,6 @@ class LoryApp(App[None]):
         self.code_matches: list[codebase.CodeMatch] = []
         self.filter_text = ""
         self.send_code = cfg.send_code_context
-        self.chat_surface, self.chat_note = remediate.recommended_surface(
-            cfg.surface, has_session_cookie=bool(cfg.session_cookie)
-        )
 
     # ── layout ──────────────────────────────────────────────────────────────
 
@@ -156,17 +153,11 @@ class LoryApp(App[None]):
 
     def _lory_intro(self) -> RenderableType:
         intro = Text()
-        intro.append(f"surface: {self.chat_surface}\n", style="bold")
-        if self.chat_note:
-            intro.append(f"\n{self.chat_note}\n", style="yellow")
-        if self.chat_surface == "public":
-            intro.append(
-                "\nThe public endpoint is Lory's sales assistant. It answers from "
-                "the finding carried in the prompt, but it cannot see your "
-                "engagement. Set a portal session_cookie for finding-aware "
-                "answers.\n",
-                style="dim",
-            )
+        intro.append(
+            "Lory answers from the finding carried in the prompt: its "
+            "description, evidence, and knowledge base entries.\n",
+            style="dim",
+        )
         intro.append("\nPress f on a finding, or type below.", style="dim")
         return intro
 
@@ -216,27 +207,11 @@ class LoryApp(App[None]):
         """
         lines: list[str] = []
 
-        # A stale cookie degrades to MCP silently. Say so rather than letting
-        # the user wonder why this looks thinner than the portal.
-        if (
-            self.store is not None
-            and self.store.portal is not None
-            and self.store.last_source != "portal"
-        ):
-            lines.append(
-                "The portal export was unavailable (the session_cookie looks "
-                "stale), so this fell back to MCP."
-            )
-
         if self.store is not None and self.store.last_source == "mcp":
             lines.append(
-                "MCP's findings.list reads one finding store. Engagement findings "
-                "are written to a different one, and incident findings to a third, "
-                "so an empty list here does not mean the account is clean."
-            )
-            lines.append(
-                "The portal export reaches the engagement findings. Refresh the "
-                "session_cookie and press r."
+                "This server does not expose findings.search, so only manual "
+                "pentest findings were read. Incident-response and Lory "
+                "engagement findings need that tool."
             )
 
         return "\n\n".join(lines) or "This account has no findings on this read path."
@@ -480,7 +455,7 @@ class LoryApp(App[None]):
     @work(thread=True, group="lory")
     def lory_worker(self, message: str) -> None:
         if self.conversation is None:
-            self.conversation = Conversation(ChatClient(self.cfg, self.chat_surface))
+            self.conversation = Conversation(ChatClient(self.cfg))
 
         self.call_from_thread(self.set_status, "asking Lory…")
         try:

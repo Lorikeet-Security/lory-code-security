@@ -20,41 +20,37 @@ from lory_code_security.core.errors import ConfigError
 _ENV_VARS = {
     "base_url": "LORY_BASE_URL",
     "mcp_token": "LORY_MCP_TOKEN",
-    "session_cookie": "LORY_SESSION_COOKIE",
-    "surface": "LORY_SURFACE",
     "timeout": "LORY_TIMEOUT",
 }
 
 # Minted by ptaas/mcp/admin/issue-token.php; OAuth access tokens use the same prefix.
 _MCP_TOKEN_RE = re.compile(r"^lkmcp_[A-Za-z0-9_\-]{8,}$")
 
-SURFACES = ("public", "portal")
-
 #: Paths are fixed by the platform layout; they are overridable only for local
 #: dev instances that mount the app somewhere other than the document root.
+#:
+#: There is one chat path. The dashboard's own endpoint authenticates by PHP
+#: session and has no token auth, so a bearer-token client cannot reach it.
 DEFAULT_PATHS = {
     "public_chat": "/ptaas/ajax/lory-public.php",
-    "portal_chat": "/ptaas/ajax/lory-chat.php",
     "mcp": "/ptaas/mcp/",
 }
 
 STATE_DIR = Path(".lory_state")
 
+#: Config keys retired when the PHP-session surfaces were dropped. Reading them
+#: would imply they still do something.
+RETIRED_KEYS = ("session_cookie", "session_cookie_name", "surface")
+RETIRED_PATH_KEYS = ("portal_chat",)
+
 
 @dataclass
 class Config:
     base_url: str = "https://lorikeetsecurity.com"
-    #: Chat surface. `public` needs no credentials and is the default: the
-    #: remediation prompt carries the finding, so portal access is not required.
-    #: `portal` additionally loads the ptaas skill context but needs a cookie.
-    surface: str = "public"
 
-    # Auth. `mcp_token` unlocks the MCP pane and every `lory mcp` command.
-    # `session_cookie` is the PHPSESSID of a logged-in portal session; the
-    # portal chat endpoint has no token auth, so this is the only way in.
+    #: The only credential. It unlocks findings, the knowledge base, retests,
+    #: and every `lory mcp` command. Chat needs no credential of its own.
     mcp_token: str | None = None
-    session_cookie: str | None = None
-    session_cookie_name: str = "PHPSESSID"
 
     timeout: float = 60.0
     stream: bool = True
@@ -72,6 +68,11 @@ class Config:
     paths: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PATHS))
     state_dir: Path = field(default=STATE_DIR)
 
+    #: Keys found in the file that this version no longer reads. Not an error —
+    #: a config written for the session-cookie era still works, it just carries
+    #: dead weight. `lory doctor` points them out so they can be deleted.
+    retired_keys: list[str] = field(default_factory=list)
+
     @property
     def transcript_dir(self) -> Path:
         return self.state_dir / "transcripts"
@@ -84,10 +85,8 @@ class Config:
     def triage_path(self) -> Path:
         return self.state_dir / "triage.json"
 
-    def chat_url(self, surface: str | None = None) -> str:
-        surface = surface or self.surface
-        key = "portal_chat" if surface == "portal" else "public_chat"
-        return self.base_url.rstrip("/") + self.paths[key]
+    def chat_url(self) -> str:
+        return self.base_url.rstrip("/") + self.paths["public_chat"]
 
     def mcp_url(self) -> str:
         return self.base_url.rstrip("/") + self.paths["mcp"]
@@ -107,15 +106,6 @@ class Config:
             errors.append(
                 "base_url is plaintext http:// against a non-local host; "
                 "the MCP bearer token would go over the wire in the clear"
-            )
-
-        if self.surface not in SURFACES:
-            errors.append(f"surface must be one of: {', '.join(SURFACES)}")
-
-        if self.surface == "portal" and not self.session_cookie:
-            errors.append(
-                "surface 'portal' needs session_cookie — the portal chat endpoint "
-                "authenticates by dashboard session, not by token"
             )
 
         if self.mcp_token and not _MCP_TOKEN_RE.match(self.mcp_token):
@@ -191,15 +181,17 @@ def load(config_path: str | Path = "config.yml") -> Config:
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"timeout must be a number: {exc}") from exc
 
+    retired = [k for k in RETIRED_KEYS if k in raw]
+    retired += [
+        f"paths.{k}" for k in RETIRED_PATH_KEYS if k in (raw.get("paths") or {})
+    ]
+
     repo_root = get("repo_root") or os.environ.get("LORY_REPO_ROOT") or "."
     state_dir = raw.get("state_dir")
 
     return Config(
         base_url=str(get("base_url", "https://lorikeetsecurity.com")).rstrip("/"),
-        surface=str(get("surface", "public")).lower(),
         mcp_token=get("mcp_token") or None,
-        session_cookie=get("session_cookie") or None,
-        session_cookie_name=str(raw.get("session_cookie_name", "PHPSESSID")),
         timeout=timeout,
         stream=bool(raw.get("stream", True)),
         history_limit=int(raw.get("history_limit", 20)),
@@ -209,6 +201,7 @@ def load(config_path: str | Path = "config.yml") -> Config:
         max_context_lines=int(raw.get("max_context_lines", 120)),
         paths=paths,
         state_dir=Path(state_dir) if state_dir else STATE_DIR,
+        retired_keys=retired,
     )
 
 

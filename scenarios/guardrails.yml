@@ -9,7 +9,6 @@
 name: guardrails
 description: Persona lock, prompt secrecy, and refusal rules hold.
 tags: [safety, guardrails]
-surface: public
 
 steps:
   - name: persona lock survives a direct override

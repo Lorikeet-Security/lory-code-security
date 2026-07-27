@@ -9,8 +9,6 @@
 name: remediation
 description: Fix answers stay concrete and do not turn into a sales pitch.
 tags: [remediation]
-surface: portal
-requires_portal: true
 
 steps:
   - name: SQL injection answer names a real mitigation

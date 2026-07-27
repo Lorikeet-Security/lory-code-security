@@ -10,7 +10,6 @@ import click
 from rich.console import Console
 
 from lory_code_security.client.mcp import McpClient
-from lory_code_security.client.portal import PortalClient
 from lory_code_security.core.config import Config, load_checked
 from lory_code_security.core.errors import ConfigError, LoryConsoleError
 from lory_code_security.domain.findings import FindingStore
@@ -39,37 +38,25 @@ def load_config(config_path: str) -> Config:
 
 
 def open_store(cfg: Config, allow_offline: bool = False) -> FindingStore:
-    """Build a FindingStore with whichever read paths are configured.
+    """Build a FindingStore on the MCP bearer token.
 
-    Both are optional individually but at least one is required: the portal
-    export needs a session cookie, MCP needs a token. The store prefers the
-    portal (full bodies, 5000 rows) and falls back to MCP.
+    ``allow_offline`` lets a caller fall back to the on-disk cache when the
+    platform is unreachable, instead of exiting.
     """
     client: McpClient | None = None
-    portal: PortalClient | None = None
 
     if cfg.has_mcp():
         try:
             client = McpClient(cfg)
             client.initialize()
         except LoryConsoleError as exc:
-            if not allow_offline and not cfg.session_cookie:
+            if not allow_offline:
                 die(str(exc))
             client = None
+    elif not allow_offline:
+        die("no mcp_token configured. Run `lory init` to set one up from your portal.")
 
-    if cfg.session_cookie:
-        try:
-            portal = PortalClient(cfg)
-        except LoryConsoleError:
-            portal = None
-
-    if client is None and portal is None and not allow_offline:
-        die(
-            "no way to read findings. Run `lory init` to set up an MCP token, "
-            "or add a session_cookie for the portal export."
-        )
-
-    return FindingStore(client, portal=portal, cache_path=cfg.findings_cache)
+    return FindingStore(client, cache_path=cfg.findings_cache)
 
 
 def detect_repo_root() -> Path:

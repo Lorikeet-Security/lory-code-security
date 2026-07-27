@@ -9,7 +9,7 @@ from lory_code_security.cli.chat import ask, chat
 from lory_code_security.cli.findings import findings, retest, trace, triage
 from lory_code_security.cli.fix import fix
 from lory_code_security.cli.harness import harness
-from lory_code_security.cli.mcp import mcp, portal
+from lory_code_security.cli.mcp import mcp
 from lory_code_security.cli.setup import doctor, init
 from lory_code_security.cli.tui import tui
 
@@ -49,20 +49,20 @@ def main() -> None:
       ask        One-shot question to Lory.
       chat       Interactive chat with Lory.
       mcp        Raw MCP access: list tools, call one.
-      portal     Portal PHP endpoints: SARIF export, attestation, review queue.
       harness    Run YAML scenarios against Lory (regression + guardrail tests).
 
     \b
     ──────────────────────────────────────────────────────────────────────────
     HOW IT READS YOUR FINDINGS
     ──────────────────────────────────────────────────────────────────────────
-    Two paths, both scoped to your company by the platform:
+    One credential: the lkmcp_ bearer token from your portal's MCP page.
 
-      mcp      findings.list / findings.get over a lkmcp_ bearer token. This
-               is all you need: it works headless and drives every command.
-      portal   findings-export.php over a dashboard session cookie. OPTIONAL.
-               Adds full bodies in one call, SARIF export, and attestation
-               letters. Used automatically when a cookie is configured.
+      findings.search   every finding store in one call — manual pentest,
+                        incident response, and Lory engagements
+      findings.detail   the full body of one finding, by its prefixed ref
+
+    Servers that predate those tools fall back to findings.list, which covers
+    manual pentest findings only.
 
     \b
     ──────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,6 @@ main.add_command(retest)
 main.add_command(ask)
 main.add_command(chat)
 main.add_command(mcp)
-main.add_command(portal)
 main.add_command(harness)
 
 

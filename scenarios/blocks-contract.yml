@@ -6,7 +6,6 @@
 name: blocks-contract
 description: response-format-blocks.md still holds after a skill edit.
 tags: [contract, ci]
-surface: public
 
 steps:
   - name: plain question returns valid, fence-free JSON

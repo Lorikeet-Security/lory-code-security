@@ -18,13 +18,12 @@ from lory_code_security.ui import render
 @click.command()
 @click.argument("message", nargs=-1, required=True)
 @CONFIG_OPTION
-@click.option("--surface", type=click.Choice(["public", "portal"]), help="Override the surface.")
 @click.option("--json", "as_json", is_flag=True, help="Emit the raw reply as JSON.")
-def ask(message: tuple[str, ...], config_path: str, surface: str | None, as_json: bool) -> None:
+def ask(message: tuple[str, ...], config_path: str, as_json: bool) -> None:
     """Ask Lory one question and print the answer."""
     cfg = load_config(config_path)
     try:
-        reply = ChatClient(cfg, surface).send(" ".join(message), stream=False)
+        reply = ChatClient(cfg).send(" ".join(message), stream=False)
     except LoryConsoleError as exc:
         die(str(exc))
         return
@@ -37,18 +36,16 @@ def ask(message: tuple[str, ...], config_path: str, surface: str | None, as_json
 
 @click.command()
 @CONFIG_OPTION
-@click.option("--surface", type=click.Choice(["public", "portal"]), help="Override the surface.")
 @click.option("--no-stream", is_flag=True, help="Wait for the whole reply instead of streaming.")
-def chat(config_path: str, surface: str | None, no_stream: bool) -> None:
+def chat(config_path: str, no_stream: bool) -> None:
     """Interactive chat with Lory. Ctrl-D or /quit to exit."""
     cfg = load_config(config_path)
-    conversation = Conversation(ChatClient(cfg, surface))
-    active = surface or cfg.surface
+    conversation = Conversation(ChatClient(cfg))
 
     console.print(
         Panel(
             Text.from_markup(
-                f"Chatting with Lory on the [bold]{active}[/bold] surface.\n"
+                "Chatting with Lory.\n"
                 "[dim]/quit to exit, /clear to reset history, /raw for the last JSON.[/dim]"
             ),
             border_style="cyan",

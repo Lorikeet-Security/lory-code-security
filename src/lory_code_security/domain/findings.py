@@ -19,13 +19,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from lory_code_security.client.mcp import McpClient
 from lory_code_security.core.errors import LoryConsoleError, ToolError
-
-if TYPE_CHECKING:
-    from lory_code_security.client.portal import PortalClient
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
@@ -53,11 +50,16 @@ class Finding:
     evidence: str = ""
     remediation: str = ""
     discovered_at: str = ""
-    #: Provenance, present on the portal export: which engine found this, in
-    #: which engagement, on which attack vector.
+    #: Provenance: which engine found this, in which engagement, on which
+    #: attack vector. Present on findings.search rows.
     source: str = ""
     engagement_id: int | None = None
     vector: str = ""
+    #: Prefixed id ("engagement-12"), unique across stores. Ids collide between
+    #: the finding tables, so this — not `id` — is what identifies a finding.
+    ref: str = ""
+    #: Which store it came from: pentest | incident | engagement.
+    store: str = ""
     #: Everything the read path returned, so nothing is lost to normalisation.
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -103,15 +105,17 @@ class Finding:
             "source": self.source,
             "engagement_id": self.engagement_id,
             "vector": self.vector,
+            "ref": self.ref,
+            "store": self.store,
         }
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Finding:
         """Build a Finding from either read path.
 
-        MCP's ``findings.list`` returns flat columns; the portal's
-        ``findings-export.php`` nests CVSS and provenance. Flatten both here so
-        nothing downstream has to know which source it came from.
+        ``findings.list`` returns flat columns; ``findings.search`` and
+        ``findings.detail`` may nest CVSS and provenance. Flatten every shape
+        here so nothing downstream has to know which tool answered.
         """
         row = dict(row)
 
@@ -159,6 +163,8 @@ class Finding:
                 int(row["engagement_id"]) if str(row.get("engagement_id", "")).isdigit() else None
             ),
             vector=text("vector"),
+            ref=text("ref"),
+            store=text("store"),
             raw=dict(row),
         )
 
@@ -166,14 +172,12 @@ class Finding:
 class FindingStore:
     """Reads findings from the platform and caches them on disk.
 
-    Two read paths, in preference order:
+    Everything runs on the MCP bearer token. Two tools, best first:
 
-    1. **Portal export** (``findings-export.php``, session cookie) — up to 5000
-       findings with description, evidence, remediation, CVSS, and provenance
-       in one request.
-    2. **MCP** (``findings.list``, bearer token) — tenant-scoped and
-       CI-friendly, but capped at 50 rows with no bodies until you call
-       ``findings.get`` per finding.
+    1. ``findings.search`` — every store (manual pentest, incident response,
+       Lory engagements) in one call, with a prefixed ``ref`` per row.
+    2. ``findings.list`` — manual pentest findings only. The fallback for a
+       server that predates the merged tool.
 
     Nothing here discovers vulnerabilities. Findings are produced by Lory's
     engine and by Lorikeet's testers, reviewed by a human, and read here.
@@ -186,11 +190,9 @@ class FindingStore:
     def __init__(
         self,
         client: McpClient | None,
-        portal: PortalClient | None = None,
         cache_path: Path | None = None,
     ) -> None:
         self.client = client
-        self.portal = portal
         self.cache_path = cache_path
         self._by_id: dict[int, Finding] = {}
         #: Which path last served a fetch, for the UI to show.
@@ -209,37 +211,57 @@ class FindingStore:
     ) -> list[Finding]:
         """Pull findings from the platform and refresh the cache.
 
-        ``prefer`` is ``auto`` (portal when available), ``portal``, or ``mcp``.
+        ``findings.search`` covers every store and is preferred; ``prefer``
+        can force ``mcp`` (search only) or ``list`` (the narrow fallback).
         """
-        if prefer in ("auto", "portal") and self.portal is not None:
+        if prefer in ("auto", "mcp") and self._can_search():
             try:
-                return self._fetch_portal(severity, status, affected_asset)
+                return self._fetch_search(severity, status, affected_asset, limit)
             except LoryConsoleError:
-                if prefer == "portal":
+                if prefer == "mcp":
                     raise
-                # Fall through to MCP: an expired cookie should degrade to the
-                # narrower path rather than failing the command outright.
 
         return self._fetch_mcp(severity, status, project_id, affected_asset, limit)
 
-    def _fetch_portal(
-        self, severity: str | None, status: str | None, affected_asset: str | None
+    def _can_search(self) -> bool:
+        """Whether the server exposes the merged findings.search tool."""
+        return self.client is not None and self.client.has_tool("findings.search")
+
+    def _fetch_search(
+        self,
+        severity: str | None,
+        status: str | None,
+        affected_asset: str | None,
+        limit: int,
     ) -> list[Finding]:
-        assert self.portal is not None
-        result = self.portal.export_findings(
-            severity=[severity] if severity else None, status=status
-        )
-        findings = [Finding.from_row(row) for row in result.findings]
+        """The merged read: every store, over the bearer token alone."""
+        assert self.client is not None
+
+        args: dict[str, Any] = {"limit": max(1, min(200, limit))}
+        if severity:
+            args["severity"] = severity.lower()
+        if status:
+            args["status"] = status.lower().replace(" ", "_")
         if affected_asset:
-            needle = affected_asset.lower()
-            findings = [f for f in findings if needle in f.affected_asset.lower()]
+            args["q"] = affected_asset
 
+        result = self.client.call_tool("findings.search", args)
+        findings = [Finding.from_row(row) for row in result.rows()]
         for finding in findings:
-            self._by_id[finding.id] = finding
+            self._merge(finding)
 
-        self.last_source = "portal"
+        self.last_source = "mcp:search"
         self.save_cache()
         return sort_findings(findings)
+
+    def _merge(self, finding: Finding) -> None:
+        """Cache a finding without losing a body an earlier fetch already got."""
+        existing = self._by_id.get(finding.id)
+        if existing is not None and existing.is_detailed and not finding.is_detailed:
+            finding.description = existing.description
+            finding.evidence = existing.evidence
+            finding.remediation = existing.remediation
+        self._by_id[finding.id] = finding
 
     def _fetch_mcp(
         self,
@@ -251,8 +273,7 @@ class FindingStore:
     ) -> list[Finding]:
         if self.client is None:
             raise ToolError(
-                "no read path available: set session_cookie for the portal export, "
-                "or mcp_token for MCP"
+                "no read path available: set mcp_token, or run `lory init`"
             )
 
         args: dict[str, Any] = {"limit": max(1, min(50, limit))}
@@ -281,7 +302,12 @@ class FindingStore:
         return sort_findings(findings)
 
     def detail(self, finding_id: int, refresh: bool = False) -> Finding:
-        """Fetch the full body of one finding via ``findings.get``."""
+        """Fetch the full body of one finding.
+
+        Uses ``findings.detail`` with the finding's prefixed ``ref`` when the
+        server has it, since a bare id is ambiguous across stores. Falls back
+        to ``findings.get``, which only resolves manual pentest findings.
+        """
         cached = self._by_id.get(finding_id)
         if cached is not None and cached.is_detailed and not refresh:
             return cached
@@ -291,14 +317,26 @@ class FindingStore:
                 return cached
             raise ToolError(f"finding #{finding_id} is not cached and MCP is unavailable")
 
-        result = self.client.call_tool("findings.get", {"id": finding_id})
+        ref = cached.ref if cached is not None else ""
+        if ref and self.client.has_tool("findings.detail"):
+            result = self.client.call_tool("findings.detail", {"ref": ref})
+            label = ref
+        else:
+            result = self.client.call_tool("findings.get", {"id": finding_id})
+            label = f"#{finding_id}"
+
         data = result.structured
         if isinstance(data, list):
             data = data[0] if data else {}
         if not isinstance(data, dict):
-            raise ToolError(f"findings.get returned an unexpected shape for #{finding_id}")
+            raise ToolError(f"detail lookup returned an unexpected shape for {label}")
 
         finding = Finding.from_row(data)
+        # findings.get answers without a ref; keep the one we routed on so a
+        # later refresh does not silently drop back to the ambiguous path.
+        if not finding.ref and ref:
+            finding.ref = ref
+            finding.store = cached.store if cached is not None else ""
         self._by_id[finding.id] = finding
         self.save_cache()
         return finding

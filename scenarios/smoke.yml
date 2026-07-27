@@ -1,7 +1,6 @@
 name: smoke
 description: Everything is reachable and answering in the documented shape.
 tags: [smoke, ci]
-surface: public
 
 steps:
   - name: MCP is alive and the token authenticates

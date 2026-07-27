@@ -22,7 +22,13 @@ from typing import Any
 import httpx
 
 from lory_code_security.core.config import Config
-from lory_code_security.core.errors import AuthError, ProtocolError, ToolError, TransportError
+from lory_code_security.core.errors import (
+    AuthError,
+    LoryConsoleError,
+    ProtocolError,
+    ToolError,
+    TransportError,
+)
 
 PROTOCOL_VERSION = "2025-06-18"
 
@@ -126,6 +132,7 @@ class McpClient:
         self.url = cfg.mcp_url()
         self.token = cfg.mcp_token
         self._id = 0
+        self._tool_names: set[str] | None = None
         self.server_info: dict[str, Any] = {}
         self.instructions: str = ""
 
@@ -200,6 +207,20 @@ class McpClient:
             self.instructions = str(result.get("instructions") or "")
         return result if isinstance(result, dict) else {}
 
+    def has_tool(self, name: str) -> bool:
+        """Whether the server exposes a tool, cached for the session.
+
+        Servers are deployed independently of this client, so a newer tool may
+        simply not be there yet. Callers use this to pick a path rather than
+        discovering the gap through an error.
+        """
+        if self._tool_names is None:
+            try:
+                self._tool_names = {t.name for t in self.list_tools()}
+            except LoryConsoleError:
+                self._tool_names = set()
+        return name in self._tool_names
+
     def list_tools(self) -> list[McpTool]:
         result = self._rpc("tools/list")
         raw = (result or {}).get("tools", []) if isinstance(result, dict) else []
@@ -216,6 +237,7 @@ class McpClient:
                     annotations=entry.get("annotations") or {},
                 )
             )
+        self._tool_names = {t.name for t in tools}
         return tools
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> McpToolResult:

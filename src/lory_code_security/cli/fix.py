@@ -53,17 +53,11 @@ def fix(
         include_code=include_code, max_context_lines=cfg.max_context_lines,
         question=question,
     )
-    surface, warning = remediate.recommended_surface(
-        cfg.surface, has_session_cookie=bool(cfg.session_cookie)
-    )
-    request.surface = surface
 
     console.print(render.render_finding_header(finding))
     console.print(f"\n[dim]{request.describe()}[/dim]")
     if request.included_code:
         console.print(f"[yellow]![/yellow] Sending source from: {', '.join(request.code_files)}")
-    if warning:
-        console.print(f"[yellow]![/yellow] {warning}")
 
     if dry_run:
         console.print()
@@ -73,7 +67,7 @@ def fix(
         return
 
     console.print()
-    conversation = Conversation(ChatClient(cfg, surface))
+    conversation = Conversation(ChatClient(cfg))
     try:
         reply = conversation.send(request.prompt, stream=False)
     except PaywallError as exc:
