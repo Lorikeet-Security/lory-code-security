@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lory-code-security"
+version = "0.1.0"
+description = "Terminal cockpit for triaging Lorikeet Security findings and fixing them with Lory"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Lorikeet Security", email = "security@lorikeetsecurity.com" }]
+keywords = ["security", "pentest", "findings", "remediation", "tui", "mcp", "sarif", "lory"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+dependencies = [
+    "click>=8.1",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+# The TUI is the headline feature but not every install needs it: CI runs the
+# harness and the export commands, which are pure Rich.
+tui = ["textual>=0.79"]
+dev = [
+    "textual>=0.79",
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+lory = "lory_code_security.cli.main:main"
+
+[project.urls]
+Homepage = "https://lorikeetsecurity.com"
+Repository = "https://github.com/Lorikeet-Security/lory-code-security"
+Issues = "https://github.com/Lorikeet-Security/lory-code-security/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["lory_code_security*"]
+
+[tool.setuptools.package-data]
+"lory_code_security.ui" = ["*.tcss"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

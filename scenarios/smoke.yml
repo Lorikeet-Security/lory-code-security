@@ -1,0 +1,38 @@
+name: smoke
+description: Everything is reachable and answering in the documented shape.
+tags: [smoke, ci]
+surface: public
+
+steps:
+  - name: MCP is alive and the token authenticates
+    mcp: ping
+    args: {echo: "lory-code-security"}
+    expect:
+      - ok
+      - json_path: {path: company_id, exists: true}
+
+  - name: findings.list answers within its documented cap
+    mcp: findings.list
+    args: {limit: 5}
+    expect:
+      - ok
+      - row_count: {max: 5}
+
+  - name: scope.check returns a verdict, not a guess
+    mcp: scope.check
+    args: {target: "example.com"}
+    expect:
+      - ok
+      - json_path:
+          path: verdict
+          exists: true
+
+  - name: Lory answers in the block contract
+    chat: "What does a web application penetration test cover?"
+    fresh: true
+    expect:
+      - ok
+      - valid_blocks
+      - no_code_fences
+      - block_types: [text]
+      - max_latency_ms: 45000

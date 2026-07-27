@@ -1,0 +1,106 @@
+# lory-code-security — example configuration.
+#
+# Copy to config.yml and fill in, or run `lory init` and let it write the file
+# for you from your Lorikeet portal.
+#
+#   cp config.example.yml config.yml && chmod 600 config.yml
+#
+# config.yml holds credentials. It is gitignored, and `lory init` writes it
+# mode 0600. Every value below can also come from the environment, which always
+# wins over the file:
+#
+#   LORY_BASE_URL  LORY_MCP_TOKEN  LORY_SESSION_COOKIE  LORY_SURFACE
+#   LORY_REPO_ROOT  LORY_TIMEOUT  LORY_CONFIG
+#
+# Use ${VAR} as a value to read it from the environment at load time, e.g.
+#   mcp_token: ${LORY_MCP_TOKEN}
+
+
+# ── Platform ────────────────────────────────────────────────────────────────
+
+# Your Lorikeet Security instance.
+base_url: https://lorikeetsecurity.com
+
+
+# ── Reading findings ────────────────────────────────────────────────────────
+#
+# Two read paths. Configure either or both; the tool prefers the portal export
+# and falls back to MCP.
+#
+#   portal   /ptaas/dashboard/ajax/findings-export.php via a dashboard session
+#            cookie. Full bodies (description, evidence, remediation, CVSS,
+#            provenance), up to 5000 findings, and SARIF export.
+#   mcp      /ptaas/mcp/ via a lkmcp_ bearer token. Capped at 50 rows with no
+#            bodies until findings.get, but works headless — use this in CI.
+
+# Mint on the portal's MCP page: /ptaas/dashboard/mcp.php
+# Scopes: findings:read is required. Add kb:read for remediation lookups and
+# retest:request to file retests from the terminal.
+mcp_token: ${LORY_MCP_TOKEN}
+
+# The PHPSESSID of a logged-in portal session. The portal's PHP endpoints have
+# no token auth, so this is the only way to reach the richer export, the
+# attestation letters, and finding-aware chat answers. Sessions expire; when
+# they do, `lory doctor` says so.
+session_cookie: ${LORY_SESSION_COOKIE}
+session_cookie_name: PHPSESSID
+
+
+# ── Talking to Lory ─────────────────────────────────────────────────────────
+
+# Which conversational surface answers.
+#
+#   portal   /ptaas/ajax/lory-chat.php — loads the ptaas skill context and can
+#            see your projects and findings. Needs session_cookie. Use this.
+#   public   /ptaas/ajax/lory-public.php — the public sales persona. No access
+#            to your findings; useful only for general questions.
+surface: portal
+
+# Render blocks as they arrive rather than waiting for the whole reply.
+stream: true
+
+# Conversation turns kept and replayed. The endpoints slice to 20 server-side,
+# so there is no point going higher.
+history_limit: 20
+
+
+# ── Your codebase ───────────────────────────────────────────────────────────
+
+# The repository findings are traced against. `lory init` fills this in from
+# `git rev-parse --show-toplevel`.
+repo_root: .
+
+# Whether `lory fix` may attach local source excerpts to the prompt.
+#
+# OFF by default: your code leaves this machine only when you say so. With it
+# off you can still pass --code per invocation, and `lory fix --dry-run` always
+# prints the exact prompt without sending anything.
+send_code_context: false
+
+# Hard ceiling on how many lines of source one remediation prompt may carry.
+max_context_lines: 120
+
+
+# ── Behaviour ───────────────────────────────────────────────────────────────
+
+# Seconds to wait on any single request. Lory's engine can take a while on a
+# long remediation answer.
+timeout: 60
+
+# Verify TLS certificates. Only set false against a local dev instance with a
+# self-signed cert, and never against production.
+verify_tls: true
+
+# Where the findings cache and your local triage log live.
+state_dir: .lory_state
+
+
+# ── Endpoint paths ──────────────────────────────────────────────────────────
+#
+# Only override these if your instance is mounted somewhere other than the
+# document root.
+#
+# paths:
+#   public_chat: /ptaas/ajax/lory-public.php
+#   portal_chat: /ptaas/ajax/lory-chat.php
+#   mcp:         /ptaas/mcp/

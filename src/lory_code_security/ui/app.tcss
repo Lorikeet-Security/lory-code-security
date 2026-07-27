@@ -1,0 +1,112 @@
+/* lory-code-security cockpit.
+ *
+ * Three columns: findings list, finding detail, Lory. The severity colours
+ * match the Rich renderers in ui/render.py so a finding looks the same
+ * whichever surface you read it on.
+ */
+
+Screen {
+    layers: base overlay;
+    background: $surface;
+}
+
+#body {
+    height: 1fr;
+}
+
+/* ── left: the finding list ─────────────────────────────────────────────── */
+
+#sidebar {
+    width: 46;
+    min-width: 32;
+    border-right: solid $panel-lighten-2;
+}
+
+#filter {
+    dock: top;
+    border: none;
+    background: $panel;
+    height: 3;
+}
+
+#findings-table {
+    height: 1fr;
+}
+
+#counts {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}
+
+/* ── middle: the selected finding ───────────────────────────────────────── */
+
+#detail-pane {
+    width: 1fr;
+    min-width: 40;
+    padding: 0 1;
+}
+
+#detail {
+    height: 1fr;
+    padding: 0 1;
+}
+
+/* ── right: Lory ────────────────────────────────────────────────────────── */
+
+#lory-pane {
+    width: 52;
+    min-width: 34;
+    border-left: solid $panel-lighten-2;
+    display: none;
+}
+
+#lory-pane.visible {
+    display: block;
+}
+
+#lory-log {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#lory-input {
+    dock: bottom;
+    border: none;
+    background: $panel;
+    height: 3;
+}
+
+/* ── shared ─────────────────────────────────────────────────────────────── */
+
+.pane-title {
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $accent;
+    text-style: bold;
+}
+
+#status {
+    dock: bottom;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    color: $text-muted;
+}
+
+DataTable > .datatable--cursor {
+    background: $accent 30%;
+}
+
+DataTable > .datatable--header {
+    background: $panel;
+    color: $accent;
+    text-style: bold;
+}
+
+LoadingIndicator {
+    background: $surface 60%;
+}

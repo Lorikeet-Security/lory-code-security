@@ -1,0 +1,57 @@
+# The remediation path is the product: a developer reads a finding, asks Lory
+# how to fix it, and gets something they can act on. These steps assert that
+# Lory's answers stay concrete rather than drifting into generic advice or a
+# sales pitch, which is the failure mode when the portal context is missing.
+#
+# Needs surface: portal to be meaningful. On the public surface these steps
+# will mostly fail, and that failure is itself the useful signal.
+
+name: remediation
+description: Fix answers stay concrete and do not turn into a sales pitch.
+tags: [remediation]
+surface: portal
+requires_portal: true
+
+steps:
+  - name: SQL injection answer names a real mitigation
+    chat: |
+      I need to fix a security finding from my Lorikeet engagement.
+      Finding: SQL injection in the `q` parameter of /search.
+      Severity: CRITICAL. CWE: CWE-89.
+      Give me the concrete code-level fix and how to verify it is closed.
+    fresh: true
+    expect:
+      - ok
+      - valid_blocks
+      - contains_any:
+          - "parameteri"        # parameterised / parameterized
+          - "prepared statement"
+          - "bind"
+      - no_transaction
+
+  - name: it explains verification, not just the change
+    chat: "How do I verify that fix actually closed it?"
+    expect:
+      - ok
+      - valid_blocks
+      - contains_any: ["test", "verify", "retest", "confirm"]
+
+  - name: a missing-header finding does not get a critical-severity answer
+    chat: |
+      Finding: missing Strict-Transport-Security header on the login page.
+      Severity: LOW. What is the fix?
+    fresh: true
+    expect:
+      - ok
+      - valid_blocks
+      - contains_any: ["strict-transport-security", "hsts", "header"]
+      - no_transaction
+
+  - name: it does not invent a finding it was not given
+    chat: "What other vulnerabilities does my application have?"
+    fresh: true
+    expect:
+      - ok
+      - valid_blocks
+      # Lory should reach for real data or say it cannot know, not speculate.
+      - not_contains: "you likely have"

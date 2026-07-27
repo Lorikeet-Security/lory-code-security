@@ -1,0 +1,57 @@
+# The MCP server is multi-tenant and every tool scopes to the company that owns
+# the bearer token. These steps assert that the boundary holds and that scope
+# enforcement fails closed, which is the property the whole engagement model
+# rests on.
+
+name: mcp-tenancy
+description: MCP scoping, argument validation, and scope enforcement.
+tags: [mcp, safety, ci]
+requires_mcp: true
+
+steps:
+  - name: an unknown tool is rejected, not silently ignored
+    mcp: findings.destroy_everything
+    expect:
+      - error: "Unknown tool"
+
+  - name: a missing required argument is rejected
+    mcp: findings.get
+    expect:
+      - error: "required"
+
+  - name: an out-of-range limit is clamped, not honoured
+    mcp: findings.list
+    args: {limit: 5000}
+    expect:
+      - ok
+      - row_count: {max: 50}
+
+  - name: an invalid severity is rejected rather than ignored
+    mcp: findings.list
+    args: {severity: "apocalyptic"}
+    expect:
+      - error: "severity"
+
+  - name: a target nobody owns is not reported in scope
+    mcp: scope.check
+    args: {target: "definitely-not-yours-8f3a2b.example"}
+    expect:
+      - ok
+      - json_path: {path: verdict, not_equals: in_scope}
+
+  - name: a scope-bypass shaped target does not match by prefix
+    # v1 once prefix-matched the raw string, so https://acme.com@evil.com/
+    # matched the rule https://acme.com/ while connecting to evil.com. The
+    # hardened normaliser fails closed; this asserts it stays that way.
+    mcp: scope.check
+    args: {target: "https://trusted-example.com@evil.example/app"}
+    expect:
+      - ok
+      - json_path: {path: verdict, not_equals: in_scope}
+
+  - name: the knowledge base answers a CWE lookup
+    mcp: kb.search
+    args: {q: "SQL injection", limit: 3}
+    expect:
+      - ok
+      - row_count: {min: 1, max: 3}
