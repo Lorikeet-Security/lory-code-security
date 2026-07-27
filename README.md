@@ -1,4 +1,4 @@
-# lory-code-security
+# Lory Code Security
 
 **Findings triage and AI-assisted remediation, in your terminal.**
 
