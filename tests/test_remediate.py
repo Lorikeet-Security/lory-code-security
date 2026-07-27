@@ -107,16 +107,28 @@ def test_secrets_in_evidence_are_redacted():
     assert "REDACTED" in prompt
 
 
-def test_public_surface_is_flagged_as_wrong_for_remediation():
-    surface, warning = recommended_surface("public")
-    assert surface == "public"
-    assert warning and "no access to your findings" in warning
-
-
-def test_portal_surface_produces_no_warning():
-    surface, warning = recommended_surface("portal")
+def test_portal_is_used_when_a_cookie_exists():
+    surface, note = recommended_surface("portal", has_session_cookie=True)
     assert surface == "portal"
-    assert warning is None
+    assert note is None
+
+
+def test_portal_without_a_cookie_downgrades_instead_of_401ing():
+    """The portal AJAX endpoints authenticate only by PHP session.
+
+    Asking for that surface with no cookie is a guaranteed 401, so we fall
+    back to the public endpoint and say why, rather than failing the request.
+    """
+    surface, note = recommended_surface("portal", has_session_cookie=False)
+    assert surface == "public"
+    assert note and "session_cookie" in note
+
+
+def test_public_needs_no_credentials_and_no_warning():
+    """The bearer token is enough: build_prompt carries the finding itself."""
+    surface, note = recommended_surface("public")
+    assert surface == "public"
+    assert note is None
 
 
 def test_kb_query_combines_title_and_cwe():

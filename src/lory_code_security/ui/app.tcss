@@ -1,24 +1,33 @@
 /* lory-code-security cockpit.
  *
- * Three columns: findings list, finding detail, Lory. The severity colours
- * match the Rich renderers in ui/render.py so a finding looks the same
- * whichever surface you read it on.
+ * Three columns: findings list, finding detail, Lory. Severity colours match
+ * the Rich renderers in ui/render.py so a finding looks the same whichever
+ * surface you read it on.
+ *
+ * Layout rule that matters: the two content panes scroll vertically and never
+ * horizontally. Anything wide (a table, a code lead, a long URL) wraps or is
+ * clipped inside its own pane rather than pushing the row sideways.
  */
 
 Screen {
-    layers: base overlay;
     background: $surface;
+}
+
+/* `root` holds the panes plus the status line; Footer docks below it. */
+#root {
+    height: 1fr;
 }
 
 #body {
     height: 1fr;
 }
 
-/* ── left: the finding list ─────────────────────────────────────────────── */
+/* -- left: the finding list ---------------------------------------------- */
 
 #sidebar {
-    width: 46;
-    min-width: 32;
+    width: 44;
+    min-width: 30;
+    max-width: 60;
     border-right: solid $panel-lighten-2;
 }
 
@@ -30,36 +39,42 @@ Screen {
 
 #findings-table {
     height: 1fr;
+    width: 1fr;
+    overflow-x: hidden;
 }
 
 #counts {
-    dock: bottom;
     height: 1;
     padding: 0 1;
     background: $panel;
     color: $text-muted;
 }
 
-/* ── middle: the selected finding ───────────────────────────────────────── */
+/* -- middle: the selected finding ---------------------------------------- */
 
 #detail-pane {
     width: 1fr;
     min-width: 40;
-    padding: 0 1;
 }
 
-/* Long unbreakable output must wrap, never scroll the pane sideways. */
-#detail {
+#detail-scroll {
     height: 1fr;
     padding: 0 1;
     overflow-x: hidden;
+    scrollbar-size-vertical: 1;
 }
 
-/* ── right: Lory ────────────────────────────────────────────────────────── */
+#detail {
+    width: 1fr;
+    height: auto;
+}
+
+/* -- right: Lory --------------------------------------------------------- */
 
 #lory-pane {
-    width: 52;
+    width: 54;
     min-width: 34;
+    max-width: 80;
     border-left: solid $panel-lighten-2;
     display: none;
 }
@@ -68,20 +83,31 @@ Screen {
     display: block;
 }
 
-#lory-log {
+#lory-scroll {
     height: 1fr;
     padding: 0 1;
     overflow-x: hidden;
+    scrollbar-size-vertical: 1;
+}
+
+#lory-intro {
+    width: 1fr;
+    height: auto;
+}
+
+.lory-message {
+    width: 1fr;
+    height: auto;
+    margin-bottom: 1;
 }
 
 #lory-input {
-    dock: bottom;
     border: none;
     background: $panel;
     height: 3;
 }
 
-/* ── shared ─────────────────────────────────────────────────────────────── */
+/* -- chrome -------------------------------------------------------------- */
 
 .pane-title {
     height: 1;
@@ -92,7 +118,6 @@ Screen {
 }
 
 #status {
-    dock: bottom;
     height: 1;
     padding: 0 1;
     background: $panel;
@@ -109,6 +134,28 @@ DataTable > .datatable--header {
     text-style: bold;
 }
 
-LoadingIndicator {
+/* -- confirmation modal -------------------------------------------------- */
+
+ConfirmScreen {
+    align: center middle;
     background: $surface 60%;
+}
+
+#confirm-box {
+    width: 70;
+    max-width: 90%;
+    height: auto;
+    padding: 1 2;
+    background: $panel;
+    border: thick $warning;
+}
+
+#confirm-question {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#confirm-detail {
+    color: $text-muted;
+    padding-bottom: 1;
 }

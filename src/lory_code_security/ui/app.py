@@ -6,8 +6,17 @@ Three columns:
 * **middle** — the selected finding, plus the local code that may cause it.
 * **right** — Lory, seeded with the selected finding when you press ``f``.
 
-Network calls run in Textual workers so the UI never blocks on the platform.
-Nothing here scans anything: findings arrive from the portal, already reviewed.
+Two Textual details this leans on deliberately:
+
+* Content panes are :class:`VerticalScroll` holding :class:`Static` widgets,
+  **not** ``RichLog``. ``RichLog`` renders each write at the width it had at
+  write time and never reflows, so anything wider than the pane is clipped
+  rather than wrapped. ``Static`` re-renders on resize, which is what a
+  three-column layout needs.
+* Every network call is a ``@work(thread=True)`` worker, so the UI stays
+  responsive and failures land in the status bar rather than as a traceback.
+
+Nothing here scans anything: findings arrive from the platform already reviewed.
 """
 
 from __future__ import annotations
@@ -15,26 +24,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from rich.console import Group, RenderableType
 from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import (
-    DataTable,
-    Footer,
-    Header,
-    Input,
-    Label,
-    RichLog,
-    Static,
-)
+from textual.widgets import DataTable, Footer, Header, Input, Label, Static
 
 from lory_code_security.client.chat import ChatClient, Conversation
 from lory_code_security.core.config import Config
-from lory_code_security.core.errors import LoryConsoleError
+from lory_code_security.core.errors import AuthError, LoryConsoleError
 from lory_code_security.domain import codebase, remediate
 from lory_code_security.domain.findings import (
     Finding,
@@ -71,7 +73,7 @@ class ConfirmScreen(ModalScreen[bool]):
             yield Label(self.question, id="confirm-question")
             if self.detail:
                 yield Static(self.detail, id="confirm-detail")
-            yield Label("[bold]y[/bold] confirm    [bold]n[/bold] cancel")
+            yield Label("[bold]y[/bold] confirm     [bold]n[/bold] cancel")
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -100,7 +102,6 @@ class LoryApp(App[None]):
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
 
-    findings: reactive[list[Finding]] = reactive(list, always_update=True)
     selected_id: reactive[int | None] = reactive(None)
 
     def __init__(self, cfg: Config, start_cached: bool = False) -> None:
@@ -114,37 +115,60 @@ class LoryApp(App[None]):
         self.code_matches: list[codebase.CodeMatch] = []
         self.filter_text = ""
         self.send_code = cfg.send_code_context
+        self.chat_surface, self.chat_note = remediate.recommended_surface(
+            cfg.surface, has_session_cookie=bool(cfg.session_cookie)
+        )
 
     # ── layout ──────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        with Horizontal(id="body"):
-            with Vertical(id="sidebar"):
-                yield Static("FINDINGS", classes="pane-title")
-                yield Input(placeholder="filter…", id="filter")
-                yield DataTable(id="findings-table", cursor_type="row", zebra_stripes=False)
-                yield Static("", id="counts")
-            with Vertical(id="detail-pane"):
-                yield Static("DETAIL", classes="pane-title")
-                yield RichLog(id="detail", wrap=True, markup=True, highlight=False)
-            with Vertical(id="lory-pane"):
-                yield Static("LORY", classes="pane-title")
-                yield RichLog(id="lory-log", wrap=True, markup=True, highlight=False)
-                yield Input(placeholder="ask Lory…", id="lory-input")
-        yield Static("", id="status")
+        with Vertical(id="root"):
+            with Horizontal(id="body"):
+                with Vertical(id="sidebar"):
+                    yield Static("FINDINGS", classes="pane-title")
+                    yield Input(placeholder="filter…", id="filter")
+                    yield DataTable(id="findings-table", cursor_type="row")
+                    yield Static("", id="counts")
+                with Vertical(id="detail-pane"):
+                    yield Static("DETAIL", classes="pane-title")
+                    with VerticalScroll(id="detail-scroll"):
+                        yield Static(id="detail")
+                with Vertical(id="lory-pane"):
+                    yield Static("LORY", classes="pane-title")
+                    with VerticalScroll(id="lory-scroll"):
+                        yield Static(id="lory-intro")
+                    yield Input(placeholder="ask Lory…", id="lory-input")
+            yield Static("", id="status")
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#findings-table", DataTable)
         table.add_column("sev", width=4)
         table.add_column("id", width=6)
-        table.add_column("title", width=24)
-        table.add_column("st", width=3)
+        table.add_column("title", width=26)
+        table.add_column("st", width=2)
         table.focus()
 
-        self.status(f"{self.cfg.base_url} · repo {self.cfg.repo_root.name}")
+        self.query_one("#lory-intro", Static).update(self._lory_intro())
+        self.set_status(f"{self.cfg.base_url}  ·  repo {self.cfg.repo_root.name}")
         self.load_findings(refresh=not self.start_cached)
+
+    def _lory_intro(self) -> RenderableType:
+        intro = Text()
+        intro.append(f"surface: {self.chat_surface}\n", style="bold")
+        if self.chat_note:
+            intro.append(f"\n{self.chat_note}\n", style="yellow")
+        if self.chat_surface == "public":
+            intro.append(
+                "\nThe public endpoint is Lory's sales assistant. It answers from "
+                "the finding carried in the prompt, but it cannot see your "
+                "engagement. Set a portal session_cookie for finding-aware "
+                "answers.\n",
+                style="dim",
+            )
+        intro.append("\nPress f on a finding, or type below.", style="dim")
+        return intro
 
     # ── data ────────────────────────────────────────────────────────────────
 
@@ -156,7 +180,11 @@ class LoryApp(App[None]):
             try:
                 self.store = open_store(self.cfg, allow_offline=True)
             except SystemExit:
-                self.call_from_thread(self.status, "no read path configured — run `lory init`")
+                self.call_from_thread(
+                    self.show_empty,
+                    "No read path configured.",
+                    "Run `lory init` to set up an MCP token from your portal.",
+                )
                 return
 
         cached = self.store.load_cache()
@@ -166,39 +194,81 @@ class LoryApp(App[None]):
         if not refresh:
             return
 
-        self.call_from_thread(self.status, "fetching findings…")
+        self.call_from_thread(self.set_status, "fetching findings…")
         try:
             rows = self.store.fetch(limit=50)
         except LoryConsoleError as exc:
-            self.call_from_thread(self.status, f"fetch failed: {exc}")
+            self.call_from_thread(self.show_empty, "Could not read findings.", str(exc))
             return
+
+        if not rows:
+            self.call_from_thread(self.show_empty, "No findings returned.", self._explain_empty())
+            return
+
         self.call_from_thread(self.set_findings, rows, self.store.last_source)
+
+    def _explain_empty(self) -> str:
+        """Why an empty list is empty. A blank pane just wastes the user's time."""
+        lines: list[str] = []
+
+        # A stale cookie degrades to MCP silently. Say so rather than letting
+        # the user wonder why this looks thinner than the portal.
+        if self.store is not None and self.store.portal is not None \
+                and self.store.last_source != "portal":
+            lines.append(
+                "The portal export was unavailable (stale session_cookie), so this "
+                "fell back to MCP."
+            )
+
+        if self.store is not None and self.store.last_source == "mcp":
+            lines.append(
+                "MCP's findings.list only exposes the pentest_findings table. "
+                "ASM and Lory-engine findings live in asm_findings, which the MCP "
+                "server does not expose — today those are reachable only through "
+                "the portal export, which needs a valid session_cookie."
+            )
+
+        return "\n\n".join(lines) or "This account has no findings on this read path."
+
+    def show_empty(self, headline: str, detail: str = "") -> None:
+        body = Text()
+        body.append(f"{headline}\n", style="bold yellow")
+        if detail:
+            body.append(f"\n{detail}", style="dim")
+        self.query_one("#detail", Static).update(body)
+        self.query_one("#counts", Static).update("0 findings")
+        self.set_status(headline)
 
     def set_findings(self, rows: list[Finding], source: str) -> None:
         self.all_findings = rows
         self.apply_filter()
         counts = severity_counts(rows)
         summary = "  ".join(
-            f"{counts[s]} {s[0].upper()}" for s in ("critical", "high", "medium", "low", "info")
+            f"{counts[s]} {s[0].upper()}"
+            for s in ("critical", "high", "medium", "low", "info")
             if counts.get(s)
         )
         self.query_one("#counts", Static).update(f"{len(rows)} findings   {summary}")
-        self.status(f"{len(rows)} findings via {source}")
+        self.set_status(f"{len(rows)} findings via {source}")
 
     def apply_filter(self) -> None:
         rows = filter_findings(self.all_findings, query=self.filter_text)
-        self.findings = rows
 
         table = self.query_one("#findings-table", DataTable)
         table.clear()
         for finding in rows:
             state = self.triage.state(finding.id)
             table.add_row(
-                Text(finding.severity.upper()[:4],
-                     style=SEVERITY_COLOURS.get(finding.severity, "dim")),
+                Text(
+                    finding.severity.upper()[:4],
+                    style=SEVERITY_COLOURS.get(finding.severity, "dim"),
+                ),
                 Text(str(finding.id), style="dim"),
                 Text(finding.title or "(untitled)"),
-                Text(_state_glyph(state), style="bold green" if state == "fixed" else "yellow"),
+                Text(
+                    _state_glyph(state),
+                    style="bold green" if state == "fixed" else "yellow",
+                ),
                 key=str(finding.id),
             )
         if rows and self.selected_id is None:
@@ -208,10 +278,7 @@ class LoryApp(App[None]):
     def current(self) -> Finding | None:
         if self.selected_id is None:
             return None
-        for finding in self.all_findings:
-            if finding.id == self.selected_id:
-                return finding
-        return None
+        return next((f for f in self.all_findings if f.id == self.selected_id), None)
 
     # ── events ──────────────────────────────────────────────────────────────
 
@@ -244,17 +311,21 @@ class LoryApp(App[None]):
     # ── detail rendering ────────────────────────────────────────────────────
 
     def show_detail(self, finding: Finding) -> None:
-        log = self.query_one("#detail", RichLog)
-        log.clear()
-        log.write(render.render_finding_detail(finding, self.triage.state(finding.id)))
+        parts: list[RenderableType] = [
+            render.render_finding_detail(finding, self.triage.state(finding.id))
+        ]
 
         if finding.source:
-            log.write(Text(f"\nfound by: {finding.source}"
-                           + (f"  ·  vector {finding.vector}" if finding.vector else ""),
-                           style="dim"))
+            provenance = f"\nfound by: {finding.source}"
+            if finding.vector:
+                provenance += f"  ·  vector {finding.vector}"
+            parts.append(Text(provenance, style="dim"))
+
         if self.code_matches:
-            log.write(Text("\nLocal code leads", style="bold"))
-            log.write(render.render_code_matches(self.code_matches, self.cfg.repo_root))
+            parts.append(Text("\nLocal code leads", style="bold"))
+            parts.append(render.render_code_matches(self.code_matches, self.cfg.repo_root))
+
+        self.query_one("#detail", Static).update(Group(*parts))
 
     @work(thread=True, group="detail")
     def load_detail(self, finding_id: int) -> None:
@@ -263,7 +334,7 @@ class LoryApp(App[None]):
         try:
             finding = self.store.detail(finding_id)
         except LoryConsoleError as exc:
-            self.call_from_thread(self.status, f"detail failed: {exc}")
+            self.call_from_thread(self.set_status, f"detail failed: {exc}")
             return
         for i, existing in enumerate(self.all_findings):
             if existing.id == finding.id:
@@ -291,7 +362,7 @@ class LoryApp(App[None]):
 
     def action_toggle_code_context(self) -> None:
         self.send_code = not self.send_code
-        self.status(
+        self.set_status(
             "code context ON — source will be sent with fix requests"
             if self.send_code
             else "code context OFF"
@@ -301,7 +372,7 @@ class LoryApp(App[None]):
         finding = self.current()
         if finding is None:
             return
-        self.status("searching the working tree…")
+        self.set_status("searching the working tree…")
         self.trace_worker(finding)
 
     @work(thread=True, group="trace")
@@ -310,8 +381,9 @@ class LoryApp(App[None]):
         self.code_matches = matches
         self.call_from_thread(self.show_detail, finding)
         self.call_from_thread(
-            self.status,
-            f"{len(matches)} code lead(s) in {self.cfg.repo_root}" if matches
+            self.set_status,
+            f"{len(matches)} code lead(s) in {self.cfg.repo_root}"
+            if matches
             else "no local code matched this finding",
         )
 
@@ -320,8 +392,7 @@ class LoryApp(App[None]):
         if finding is None:
             return
 
-        pane = self.query_one("#lory-pane")
-        pane.add_class("visible")
+        self.query_one("#lory-pane").add_class("visible")
 
         request = remediate.build_prompt(
             finding,
@@ -349,7 +420,7 @@ class LoryApp(App[None]):
         state = "new" if self.triage.state(finding.id) == "fixed" else "fixed"
         self.triage.set_state(finding.id, state)
         self.apply_filter()
-        self.status(f"#{finding.id} marked {state} locally (not on the platform)")
+        self.set_status(f"#{finding.id} marked {state} locally (not on the platform)")
 
     def action_request_retest(self) -> None:
         finding = self.current()
@@ -368,9 +439,9 @@ class LoryApp(App[None]):
         try:
             self.store.request_retest(finding_id, "Requested from lory-code-security")
         except LoryConsoleError as exc:
-            self.call_from_thread(self.status, f"retest failed: {exc}")
+            self.call_from_thread(self.set_status, f"retest failed: {exc}")
             return
-        self.call_from_thread(self.status, f"retest requested for #{finding_id}")
+        self.call_from_thread(self.set_status, f"retest requested for #{finding_id}")
 
     def action_open_editor(self) -> None:
         """Open the top code lead in $EDITOR, suspending the TUI."""
@@ -378,71 +449,70 @@ class LoryApp(App[None]):
         import subprocess
 
         if not self.code_matches:
-            self.status("no code leads yet — press t to trace")
+            self.set_status("no code leads yet — press t to trace")
             return
 
         editor = os.environ.get("EDITOR", "vi")
         match = self.code_matches[0]
-        target = _editor_target(editor, match.path, match.line)
         with self.suspend():
-            subprocess.run([editor, *target], check=False)
+            subprocess.run(
+                [editor, *_editor_target(editor, match.path, match.line)], check=False
+            )
 
     # ── Lory ────────────────────────────────────────────────────────────────
 
     def send_to_lory(self, message: str) -> None:
-        pane = self.query_one("#lory-pane")
-        pane.add_class("visible")
-        log = self.query_one("#lory-log", RichLog)
-        log.write(Text(f"\n› {message[:300]}", style="bold cyan"))
+        self.query_one("#lory-pane").add_class("visible")
+        self.append_lory(Text(f"› {message[:400]}", style="bold cyan"))
         self.lory_worker(message)
 
     @work(thread=True, group="lory")
     def lory_worker(self, message: str) -> None:
         if self.conversation is None:
-            surface, warning = remediate.recommended_surface(
-                self.cfg.surface, has_session_cookie=bool(self.cfg.session_cookie)
-            )
-            self.conversation = Conversation(ChatClient(self.cfg, surface))
-            if warning:
-                self.call_from_thread(self._lory_write, Text(warning, style="yellow"))
+            self.conversation = Conversation(ChatClient(self.cfg, self.chat_surface))
 
-        self.call_from_thread(self.status, "asking Lory…")
+        self.call_from_thread(self.set_status, "asking Lory…")
         try:
             reply = self.conversation.send(message, stream=False)
+        except AuthError as exc:
+            self.call_from_thread(self.append_lory, Text(str(exc), style="red"))
+            self.call_from_thread(self.set_status, "Lory rejected the credentials")
+            return
         except LoryConsoleError as exc:
-            self.call_from_thread(self._lory_write, Text(f"error: {exc}", style="red"))
-            self.call_from_thread(self.status, "Lory request failed")
+            self.call_from_thread(self.append_lory, Text(f"error: {exc}", style="red"))
+            self.call_from_thread(self.set_status, "Lory request failed")
             return
 
         self.call_from_thread(
-            self._lory_write, render.render_reply(reply.blocks, reply.suggestions, width=48)
+            self.append_lory, render.render_reply(reply.blocks, reply.suggestions)
         )
-        self.call_from_thread(self.status, f"Lory replied in {reply.elapsed_ms / 1000:.1f}s")
+        self.call_from_thread(
+            self.set_status, f"Lory replied in {reply.elapsed_ms / 1000:.1f}s"
+        )
 
-    def _lory_write(self, renderable: Any) -> None:
-        self.query_one("#lory-log", RichLog).write(renderable)
+    def append_lory(self, renderable: RenderableType) -> None:
+        """Append a reflowing Static to the Lory pane and scroll to it."""
+        scroll = self.query_one("#lory-scroll", VerticalScroll)
+        scroll.mount(Static(renderable, classes="lory-message"))
+        scroll.scroll_end(animate=False)
 
     # ── misc ────────────────────────────────────────────────────────────────
 
-    def status(self, message: str) -> None:
+    def set_status(self, message: str) -> None:
         self.query_one("#status", Static).update(message)
 
 
 def _state_glyph(state: str) -> str:
-    return {
-        "new": "", "reading": "·", "fixing": "~", "fixed": "✓", "wontfix": "×",
-    }.get(state, "")
+    return {"new": "", "reading": "·", "fixing": "~", "fixed": "✓", "wontfix": "×"}.get(
+        state, ""
+    )
 
 
 def _editor_target(editor: str, path: Path, line: int) -> list[str]:
     """Build the jump-to-line argument for the common editors."""
     name = Path(editor).name
-    if name in ("vi", "vim", "nvim"):
+    if name in ("vi", "vim", "nvim", "emacs", "emacsclient", "nano", "micro"):
         return [f"+{line}", str(path)]
     if name in ("code", "codium", "cursor"):
         return ["--goto", f"{path}:{line}"]
-    if name in ("emacs", "emacsclient"):
-        return [f"+{line}", str(path)]
-    if name in ("nano", "micro"):
-        return [f"+{line}", str(path)]
     return [str(path)]

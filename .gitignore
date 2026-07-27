@@ -32,3 +32,6 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+
+# Stray nested clone, not part of this repo.
+/lory-code-security/
