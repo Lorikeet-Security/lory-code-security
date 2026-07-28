@@ -94,12 +94,14 @@ class ChatClient:
         return headers
 
     def _payload(self, message: str, history: list[dict[str, str]], stream: bool) -> dict[str, Any]:
+        # history_limit counts turns; a turn is a user message and its reply,
+        # so the slice is twice the limit.
         trimmed = [
             {
                 "role": "assistant" if turn.get("role") == "assistant" else "user",
                 "content": str(turn.get("content", ""))[:_MAX_HISTORY_CONTENT],
             }
-            for turn in history[-self.cfg.history_limit:]
+            for turn in history[-(self.cfg.history_limit * 2):]
         ]
         payload: dict[str, Any] = {
             "message": message[:_MAX_MESSAGE_CHARS],
@@ -267,9 +269,11 @@ class Conversation:
         self.history.append({"role": "user", "content": message[:_MAX_HISTORY_CONTENT]})
         self.history.append(reply.to_history_turn())
         # The endpoints keep the last 20 turns; holding more just wastes memory.
-        limit = self.client.cfg.history_limit
-        if limit and len(self.history) > limit:
-            self.history = self.history[-limit:]
+        # Two entries per turn, and an even slice so history never starts on an
+        # assistant message with no question in front of it.
+        entries = self.client.cfg.history_limit * 2
+        if entries and len(self.history) > entries:
+            self.history = self.history[-entries:]
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────

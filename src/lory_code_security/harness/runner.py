@@ -52,18 +52,25 @@ class ScenarioResult:
             return False
         return all(s.passed for s in self.steps if not s.step.soft)
 
-    def counts(self) -> tuple[int, int, int]:
-        """(passed, failed, skipped) over every check in the scenario."""
-        passed = failed = skipped = 0
+    def counts(self) -> tuple[int, int, int, int]:
+        """(passed, failed, skipped, soft_failed) over every check.
+
+        A failing check on a ``soft`` step is counted separately and never in
+        ``failed``: soft steps do not affect the exit code, so reporting them
+        as failures contradicts the verdict and turns CI red on a pass.
+        """
+        passed = failed = skipped = soft_failed = 0
         for step in self.steps:
             for check in step.checks:
                 if check.skipped:
                     skipped += 1
                 elif check.passed:
                     passed += 1
+                elif step.step.soft:
+                    soft_failed += 1
                 else:
                     failed += 1
-        return passed, failed, skipped
+        return passed, failed, skipped, soft_failed
 
 
 ProgressFn = Callable[[str, Any], None]
@@ -184,7 +191,10 @@ class Runner:
             text=result.text,
             raw_text=result.text,
             structured=result.structured,
-            error="tool reported isError" if result.is_error else None,
+            # MCP puts the reason for a tool-level failure in the content, so
+            # keep it: `expect: - error: "required"` has nothing to match
+            # against otherwise.
+            error=(result.text.strip() or "tool reported isError") if result.is_error else None,
         )
 
     # ── shared MCP session ──────────────────────────────────────────────────

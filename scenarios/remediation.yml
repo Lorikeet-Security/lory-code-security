@@ -1,10 +1,12 @@
 # The remediation path is the product: a developer reads a finding, asks Lory
 # how to fix it, and gets something they can act on. These steps assert that
 # Lory's answers stay concrete rather than drifting into generic advice or a
-# sales pitch, which is the failure mode when the portal context is missing.
+# sales pitch, which is the failure mode when the finding context is thin.
 #
-# Needs surface: portal to be meaningful. On the public surface these steps
-# will mostly fail, and that failure is itself the useful signal.
+# Each step carries its own finding into the message, exactly as `lory fix`
+# does, because the chat endpoint has no access to your engagement. That is
+# what these steps are really testing: that a well-grounded prompt still gets
+# a specific answer back.
 
 name: remediation
 description: Fix answers stay concrete and do not turn into a sales pitch.

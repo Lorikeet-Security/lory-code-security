@@ -1,8 +1,13 @@
 """Findings commands: list, show, export, trace, triage, retest.
 
-Everything here reads from the platform over MCP (``findings.list`` and
-``findings.get``). The local cache is a convenience for offline reading; any
-command that acts on a finding re-reads it from the platform first.
+Everything here reads from the platform over MCP: ``findings.search`` and
+``findings.detail`` where the server has them, ``findings.list`` and
+``findings.get`` on older servers. The local cache is a convenience for offline
+reading; any command that acts on a finding re-reads it from the platform first.
+
+Commands that name one finding take its ``ref`` (``engagement-12``) or a bare
+id (``12``). A bare id is rejected rather than guessed when it matches findings
+in more than one store.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from lory_code_security.cli.common import (
     load_config,
     open_store,
 )
-from lory_code_security.core.errors import LoryConsoleError
+from lory_code_security.core.errors import AmbiguousFindingError, LoryConsoleError
 from lory_code_security.domain.findings import (
     Finding,
     TriageLog,
@@ -85,27 +90,27 @@ def findings_list(
 
 
 @findings.command("show")
-@click.argument("finding_id", type=int)
+@click.argument("finding")
 @CONFIG_OPTION
 @click.option("--json", "as_json", is_flag=True, help="Emit the raw finding as JSON.")
-def findings_show(finding_id: int, config_path: str, as_json: bool) -> None:
-    """Show the full body of one finding."""
+def findings_show(finding: str, config_path: str, as_json: bool) -> None:
+    """Show the full body of one finding. FINDING is a ref or an id."""
     cfg = load_config(config_path)
     store = open_store(cfg)
     store.load_cache()
 
     try:
-        finding = store.detail(finding_id)
+        row = store.detail(finding)
     except LoryConsoleError as exc:
         die(str(exc))
         return
 
     if as_json:
-        click.echo(json.dumps(finding.to_dict(), indent=2))
+        click.echo(json.dumps(row.to_dict(), indent=2))
         return
 
     console.print(
-        render.render_finding_detail(finding, TriageLog(cfg.triage_path).state(finding.id))
+        render.render_finding_detail(row, TriageLog(cfg.triage_path).state(row.key))
     )
 
 
@@ -145,16 +150,17 @@ def findings_export(config_path: str, fmt: str, out: Path | None, cached: bool) 
 
 
 @click.command()
-@click.argument("finding_id", type=int)
+@click.argument("finding_ref")
 @CONFIG_OPTION
 @click.option("--limit", type=int, default=15, show_default=True, help="Max code leads to show.")
 @click.option("--context", type=int, default=0, help="Lines of surrounding source to print.")
-def trace(finding_id: int, config_path: str, limit: int, context: int) -> None:
+def trace(finding_ref: str, config_path: str, limit: int, context: int) -> None:
     """Show local source that may be responsible for a finding.
 
-    Heuristic: parameters, routes, and file paths named in the finding are
-    grepped against your working tree, plus sink patterns for its CWE. Every
-    hit is labelled with the token that produced it, so bad leads are obvious.
+    FINDING_REF is a ref or an id. Heuristic: parameters, routes, and file
+    paths named in the finding are grepped against your working tree, plus sink
+    patterns for its CWE. Every hit is labelled with the token that produced
+    it, so bad leads are obvious.
     """
     from lory_code_security.domain import codebase
 
@@ -163,7 +169,7 @@ def trace(finding_id: int, config_path: str, limit: int, context: int) -> None:
     store.load_cache()
 
     try:
-        finding = store.detail(finding_id)
+        finding = store.detail(finding_ref)
     except LoryConsoleError as exc:
         die(str(exc))
         return
@@ -204,42 +210,56 @@ def trace(finding_id: int, config_path: str, limit: int, context: int) -> None:
 
 
 @click.command()
-@click.argument("finding_id", type=int)
+@click.argument("finding_ref")
 @click.argument("state", type=click.Choice(["new", "reading", "fixing", "fixed", "wontfix"]))
 @CONFIG_OPTION
 @click.option("--note", default="", help="Attach a note to the triage entry.")
-def triage(finding_id: int, state: str, config_path: str, note: str) -> None:
+def triage(finding_ref: str, state: str, config_path: str, note: str) -> None:
     """Set your local workflow state on a finding.
 
-    Local only. It never changes the finding's status on the platform — only a
-    retest closes a finding upstream.
+    FINDING_REF is a ref or an id. Local only: it never changes the finding's
+    status on the platform — only a retest closes a finding upstream.
     """
     cfg = load_config(config_path)
-    TriageLog(cfg.triage_path).set_state(finding_id, state, note)
+
+    # Resolve against the cache so the state lands on the finding's key rather
+    # than on a bare id that may name a second finding in another store.
+    key = finding_ref
+    store = open_store(cfg, allow_offline=True)
+    store.load_cache()
+    try:
+        key = store.resolve(finding_ref).key
+    except LoryConsoleError as exc:
+        if isinstance(exc, AmbiguousFindingError):
+            die(str(exc))
+            return
+
+    TriageLog(cfg.triage_path).set_state(key, state, note)
     console.print(
-        f"[green]✓[/green] #{finding_id} marked [bold]{state}[/bold] locally "
+        f"[green]✓[/green] {key} marked [bold]{state}[/bold] locally "
         f"({cfg.triage_path})"
     )
     if state == "fixed":
-        console.print(f"[dim]  Ready for a retest? Run: lory retest {finding_id}[/dim]")
+        console.print(f"[dim]  Ready for a retest? Run: lory retest {key}[/dim]")
 
 
 @click.command()
-@click.argument("finding_id", type=int)
+@click.argument("finding_ref")
 @CONFIG_OPTION
 @click.option("--note", default="", help="What changed and how you fixed it.")
 @click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
-def retest(finding_id: int, config_path: str, note: str, yes: bool) -> None:
+def retest(finding_ref: str, config_path: str, note: str, yes: bool) -> None:
     """Ask the Lorikeet team to re-test a finding you have fixed.
 
-    This is outward facing: it files a request with a human team.
+    FINDING_REF is a ref or an id. This is outward facing: it files a request
+    with a human team.
     """
     cfg = load_config(config_path)
     store = open_store(cfg)
     store.load_cache()
 
     try:
-        finding = store.detail(finding_id)
+        finding = store.detail(finding_ref)
     except LoryConsoleError as exc:
         die(str(exc))
         return
@@ -249,16 +269,16 @@ def retest(finding_id: int, config_path: str, note: str, yes: bool) -> None:
         note = click.prompt("What changed", default="", show_default=False)
     if not yes:
         click.confirm(
-            f"\nFile a retest request for #{finding_id} with the Lorikeet team?", abort=True
+            f"\nFile a retest request for {finding.key} with the Lorikeet team?", abort=True
         )
 
     try:
-        result = store.request_retest(finding_id, note)
+        result = store.request_retest(finding, note)
     except LoryConsoleError as exc:
         die(str(exc))
         return
 
-    console.print(f"[green]✓[/green] Retest requested for #{finding_id}")
+    console.print(f"[green]✓[/green] Retest requested for {finding.key}")
     console.print(Text(json.dumps(result, indent=2), style="dim"))
 
 
@@ -294,7 +314,7 @@ def _sarif(rows: list[Finding]) -> str:
             "level": _SARIF_LEVEL.get(finding.severity, "warning"),
             "message": {"text": f"{finding.title}\n\n{finding.description}".strip()},
             "properties": {
-                "ref": finding.ref or str(finding.id),
+                "ref": finding.key,
                 "severity": finding.severity,
                 "cvss_score": finding.cvss_score,
                 "affected_asset": finding.affected_asset,
@@ -334,7 +354,8 @@ def _export(rows: list[Finding], fmt: str) -> str:
 
     if fmt == "csv":
         buffer = io.StringIO()
-        columns = ["id", "severity", "status", "title", "affected_asset", "cwe_id", "cvss_score"]
+        columns = ["key", "id", "severity", "status", "title", "affected_asset",
+                   "cwe_id", "cvss_score"]
         writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         for finding in rows:
@@ -343,7 +364,7 @@ def _export(rows: list[Finding], fmt: str) -> str:
 
     lines = ["# Findings", ""]
     for finding in rows:
-        lines.append(f"## #{finding.id} {finding.title}")
+        lines.append(f"## {finding.key} {finding.title}")
         lines.append("")
         lines.append(f"- **Severity:** {finding.severity}")
         if finding.cvss_score:

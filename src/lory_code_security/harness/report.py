@@ -56,16 +56,18 @@ def print_summary(console: Console, results: list[ScenarioResult]) -> None:
     table.add_column("scenario")
     table.add_column("checks", justify="right")
     table.add_column("failed", justify="right")
+    table.add_column("soft", justify="right")
     table.add_column("time", justify="right")
     table.add_column("result")
 
-    total_passed = total_failed = total_skipped = 0
+    total_passed = total_failed = total_skipped = total_soft = 0
 
     for result in results:
-        passed, failed, skipped = result.counts()
+        passed, failed, skipped, soft = result.counts()
         total_passed += passed
         total_failed += failed
         total_skipped += skipped
+        total_soft += soft
 
         if result.skipped:
             verdict = Text("skipped", style="dim")
@@ -78,8 +80,9 @@ def print_summary(console: Console, results: list[ScenarioResult]) -> None:
 
         table.add_row(
             Text(result.scenario.name, style="bold"),
-            str(passed + failed),
+            str(passed + failed + soft),
             Text(str(failed), style="red" if failed else "dim"),
+            Text(str(soft) if soft else "", style="yellow" if soft else "dim"),
             f"{result.elapsed_ms / 1000:.1f}s",
             verdict,
         )
@@ -90,18 +93,22 @@ def print_summary(console: Console, results: list[ScenarioResult]) -> None:
         if result.error:
             console.print(f"\n[red]{result.scenario.name}:[/red] {result.error}")
 
+    # Soft failures are informational, so they are reported but never change
+    # the verdict or the exit code.
+    soft_note = f", {total_soft} soft" if total_soft else ""
+
     failed_scenarios = [r for r in results if not r.passed]
     console.print()
     if failed_scenarios:
         console.print(
             f"[bold red]{len(failed_scenarios)} of {len(results)} scenarios failed[/bold red] "
             f"[dim]({total_passed} checks passed, {total_failed} failed, "
-            f"{total_skipped} skipped)[/dim]"
+            f"{total_skipped} skipped{soft_note})[/dim]"
         )
     else:
         console.print(
             f"[bold green]All {len(results)} scenarios passed[/bold green] "
-            f"[dim]({total_passed} checks, {total_skipped} skipped)[/dim]"
+            f"[dim]({total_passed} checks passed, {total_skipped} skipped{soft_note})[/dim]"
         )
 
 
@@ -120,6 +127,9 @@ def to_dict(results: list[ScenarioResult]) -> dict[str, Any]:
                 "skipped_reason": r.skipped_reason,
                 "error": r.error,
                 "elapsed_ms": round(r.elapsed_ms, 1),
+                "counts": dict(
+                    zip(("passed", "failed", "skipped", "soft_failed"), r.counts(), strict=True)
+                ),
                 "steps": [
                     {
                         "label": s.step.label(),
@@ -157,14 +167,17 @@ def write_junit(results: list[ScenarioResult], path: Path) -> None:
     suites = ET.Element("testsuites", name="lory-code-security")
 
     for result in results:
-        passed, failed, skipped = result.counts()
+        passed, failed, skipped, soft = result.counts()
         suite = ET.SubElement(
             suites,
             "testsuite",
             name=result.scenario.name,
-            tests=str(passed + failed + skipped),
+            tests=str(passed + failed + skipped + soft),
             failures=str(failed),
-            skipped=str(skipped),
+            # Soft failures land in `skipped`, not `failures`: JUnit has no
+            # "warning", and counting them as failures turns a green run red
+            # in CI even though the harness exits 0.
+            skipped=str(skipped + soft),
             time=f"{result.elapsed_ms / 1000:.3f}",
         )
 
@@ -188,6 +201,12 @@ def write_junit(results: list[ScenarioResult], path: Path) -> None:
                 )
                 if check.skipped:
                     ET.SubElement(case, "skipped", message=check.detail)
+                elif not check.passed and step.step.soft:
+                    ET.SubElement(
+                        case,
+                        "skipped",
+                        message=f"soft: {check.detail or check.name + ' failed'}",
+                    ).text = _evidence(step)
                 elif not check.passed:
                     ET.SubElement(
                         case, "failure", message=check.detail or f"{check.name} failed"

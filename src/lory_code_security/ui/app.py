@@ -102,7 +102,9 @@ class LoryApp(App[None]):
         Binding("escape", "clear_filter", "Clear filter", show=False),
     ]
 
-    selected_id: reactive[int | None] = reactive(None)
+    #: The selected finding's key (``engagement-12``), not its integer id:
+    #: ids repeat across the platform's finding stores.
+    selected_key: reactive[str | None] = reactive(None)
 
     def __init__(self, cfg: Config, start_cached: bool = False) -> None:
         super().__init__()
@@ -113,6 +115,9 @@ class LoryApp(App[None]):
         self.conversation: Conversation | None = None
         self.all_findings: list[Finding] = []
         self.code_matches: list[codebase.CodeMatch] = []
+        #: Which finding the current code leads belong to, so a table rebuild
+        #: that re-fires RowHighlighted does not discard a trace the user ran.
+        self.code_matches_key: str | None = None
         self.filter_text = ""
         self.send_code = cfg.send_code_context
 
@@ -142,7 +147,7 @@ class LoryApp(App[None]):
     def on_mount(self) -> None:
         table = self.query_one("#findings-table", DataTable)
         table.add_column("sev", width=4)
-        table.add_column("id", width=6)
+        table.add_column("ref", width=14)
         table.add_column("title", width=26)
         table.add_column("st", width=2)
         table.focus()
@@ -189,7 +194,14 @@ class LoryApp(App[None]):
         try:
             rows = self.store.fetch(limit=50)
         except LoryConsoleError as exc:
-            self.call_from_thread(self.show_empty, "Could not read findings.", str(exc))
+            # A failed refresh must not destroy a cached view that is already
+            # on screen: say so in the status bar and leave the findings up.
+            if cached:
+                self.call_from_thread(
+                    self.set_status, f"refresh failed, showing {len(cached)} cached: {exc}"
+                )
+            else:
+                self.call_from_thread(self.show_empty, "Could not read findings.", str(exc))
             return
 
         if not rows:
@@ -243,28 +255,30 @@ class LoryApp(App[None]):
         table = self.query_one("#findings-table", DataTable)
         table.clear()
         for finding in rows:
-            state = self.triage.state(finding.id)
+            state = self.triage.state(finding.key)
             table.add_row(
                 Text(
                     finding.severity.upper()[:4],
                     style=SEVERITY_COLOURS.get(finding.severity, "dim"),
                 ),
-                Text(str(finding.id), style="dim"),
+                Text(finding.key, style="dim"),
                 Text(finding.title or "(untitled)"),
                 Text(
                     _state_glyph(state),
                     style="bold green" if state == "fixed" else "yellow",
                 ),
-                key=str(finding.id),
+                # Keyed by the finding's key. Keying by id raised DuplicateKey
+                # the moment two stores each held a finding with the same id.
+                key=finding.key,
             )
-        if rows and self.selected_id is None:
-            self.selected_id = rows[0].id
+        if rows and self.selected_key is None:
+            self.selected_key = rows[0].key
             self.show_detail(rows[0])
 
     def current(self) -> Finding | None:
-        if self.selected_id is None:
+        if self.selected_key is None:
             return None
-        return next((f for f in self.all_findings if f.id == self.selected_id), None)
+        return next((f for f in self.all_findings if f.key == self.selected_key), None)
 
     # ── events ──────────────────────────────────────────────────────────────
 
@@ -272,13 +286,18 @@ class LoryApp(App[None]):
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key is None or event.row_key.value is None:
             return
-        self.selected_id = int(event.row_key.value)
-        self.code_matches = []
+        self.selected_key = str(event.row_key.value)
+        # Drop code leads only when the selection genuinely moved. Rebuilding
+        # the table (filter, mark-fixed) re-fires this for the same row, and
+        # discarding the trace there loses work the user just did.
+        if self.code_matches_key != self.selected_key:
+            self.code_matches = []
+            self.code_matches_key = None
         finding = self.current()
         if finding is not None:
             self.show_detail(finding)
             if not finding.is_detailed:
-                self.load_detail(finding.id)
+                self.load_detail(finding.key)
 
     @on(Input.Submitted, "#filter")
     def _filter_submitted(self, event: Input.Submitted) -> None:
@@ -298,7 +317,7 @@ class LoryApp(App[None]):
 
     def show_detail(self, finding: Finding) -> None:
         parts: list[RenderableType] = [
-            render.render_finding_detail(finding, self.triage.state(finding.id))
+            render.render_finding_detail(finding, self.triage.state(finding.key))
         ]
 
         if finding.source:
@@ -314,19 +333,19 @@ class LoryApp(App[None]):
         self.query_one("#detail", Static).update(Group(*parts))
 
     @work(thread=True, group="detail")
-    def load_detail(self, finding_id: int) -> None:
+    def load_detail(self, key: str) -> None:
         if self.store is None:
             return
         try:
-            finding = self.store.detail(finding_id)
+            finding = self.store.detail(key)
         except LoryConsoleError as exc:
             self.call_from_thread(self.set_status, f"detail failed: {exc}")
             return
         for i, existing in enumerate(self.all_findings):
-            if existing.id == finding.id:
+            if existing.key == finding.key:
                 self.all_findings[i] = finding
                 break
-        if self.selected_id == finding_id:
+        if self.selected_key == key:
             self.call_from_thread(self.show_detail, finding)
 
     # ── actions ─────────────────────────────────────────────────────────────
@@ -365,6 +384,7 @@ class LoryApp(App[None]):
     def trace_worker(self, finding: Finding) -> None:
         matches = codebase.locate(finding, self.cfg.repo_root, limit=15)
         self.code_matches = matches
+        self.code_matches_key = finding.key
         self.call_from_thread(self.show_detail, finding)
         self.call_from_thread(
             self.set_status,
@@ -403,10 +423,10 @@ class LoryApp(App[None]):
         finding = self.current()
         if finding is None:
             return
-        state = "new" if self.triage.state(finding.id) == "fixed" else "fixed"
-        self.triage.set_state(finding.id, state)
+        state = "new" if self.triage.state(finding.key) == "fixed" else "fixed"
+        self.triage.set_state(finding.key, state)
         self.apply_filter()
-        self.set_status(f"#{finding.id} marked {state} locally (not on the platform)")
+        self.set_status(f"{finding.key} marked {state} locally (not on the platform)")
 
     def action_request_retest(self) -> None:
         finding = self.current()
@@ -414,20 +434,20 @@ class LoryApp(App[None]):
             return
         self.push_screen(
             ConfirmScreen(
-                f"File a retest request for #{finding.id} with the Lorikeet team?",
+                f"File a retest request for {finding.key} with the Lorikeet team?",
                 finding.title,
             ),
-            lambda ok: self.retest_worker(finding.id) if ok else None,
+            lambda ok: self.retest_worker(finding) if ok else None,
         )
 
     @work(thread=True, group="retest")
-    def retest_worker(self, finding_id: int) -> None:
+    def retest_worker(self, finding: Finding) -> None:
         try:
-            self.store.request_retest(finding_id, "Requested from lory-code-security")
+            self.store.request_retest(finding, "Requested from lory-code-security")
         except LoryConsoleError as exc:
             self.call_from_thread(self.set_status, f"retest failed: {exc}")
             return
-        self.call_from_thread(self.set_status, f"retest requested for #{finding_id}")
+        self.call_from_thread(self.set_status, f"retest requested for {finding.key}")
 
     def action_open_editor(self) -> None:
         """Open the top code lead in $EDITOR, suspending the TUI."""

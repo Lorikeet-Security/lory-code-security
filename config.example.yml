@@ -5,12 +5,11 @@
 #
 #   cp config.example.yml config.yml && chmod 600 config.yml
 #
-# config.yml holds credentials. It is gitignored, and `lory init` writes it
-# mode 0600. Every value below can also come from the environment, which always
+# config.yml holds a credential. It is gitignored, and `lory init` writes it
+# mode 0600. The values below can also come from the environment, which always
 # wins over the file:
 #
-#   LORY_BASE_URL  LORY_MCP_TOKEN  LORY_SESSION_COOKIE  LORY_SURFACE
-#   LORY_REPO_ROOT  LORY_TIMEOUT  LORY_CONFIG
+#   LORY_BASE_URL  LORY_MCP_TOKEN  LORY_REPO_ROOT  LORY_TIMEOUT  LORY_CONFIG
 #
 # Use ${VAR} as a value to read it from the environment at load time, e.g.
 #   mcp_token: ${LORY_MCP_TOKEN}
@@ -24,43 +23,31 @@ base_url: https://lorikeetsecurity.com
 
 # ── Reading findings ────────────────────────────────────────────────────────
 #
-# Two read paths. Configure either or both; the tool prefers the portal export
-# and falls back to MCP.
+# One credential does everything: the lkmcp_ bearer token, over /ptaas/mcp/.
+# It works headless, so the same config runs locally and in CI.
 #
-#   portal   /ptaas/dashboard/ajax/findings-export.php via a dashboard session
-#            cookie. Full bodies (description, evidence, remediation, CVSS,
-#            provenance), up to 5000 findings, and SARIF export.
-#   mcp      /ptaas/mcp/ via a lkmcp_ bearer token. Capped at 50 rows with no
-#            bodies until findings.get, but works headless — use this in CI.
+# The tool prefers findings.search, which covers every finding store (manual
+# pentest, incident response, and Lory engagements) in one call and returns a
+# prefixed ref per row. Servers without it fall back to findings.list, which
+# sees manual pentest findings only.
 
 # Mint on the portal's MCP page: /ptaas/dashboard/mcp.php
 # Scopes: findings:read is required. Add kb:read for remediation lookups and
 # retest:request to file retests from the terminal.
 mcp_token: ${LORY_MCP_TOKEN}
 
-# The PHPSESSID of a logged-in portal session. The portal's PHP endpoints have
-# no token auth, so this is the only way to reach the richer export, the
-# attestation letters, and finding-aware chat answers. Sessions expire; when
-# they do, `lory doctor` says so.
-session_cookie: ${LORY_SESSION_COOKIE}
-session_cookie_name: PHPSESSID
-
 
 # ── Talking to Lory ─────────────────────────────────────────────────────────
-
-# Which conversational surface answers.
 #
-#   portal   /ptaas/ajax/lory-chat.php — loads the ptaas skill context and can
-#            see your projects and findings. Needs session_cookie. Use this.
-#   public   /ptaas/ajax/lory-public.php — the public sales persona. No access
-#            to your findings; useful only for general questions.
-surface: portal
+# Remediation answers come from Lory's public chat endpoint, which needs no
+# credential of its own. The prompt carries the finding, its evidence, and its
+# knowledge base entries, so the answer is grounded in the finding regardless.
 
 # Render blocks as they arrive rather than waiting for the whole reply.
 stream: true
 
-# Conversation turns kept and replayed. The endpoints slice to 20 server-side,
-# so there is no point going higher.
+# Conversation turns kept and replayed. The endpoint slices to 20 turns
+# server-side, so there is no point going higher.
 history_limit: 20
 
 
@@ -102,5 +89,4 @@ state_dir: .lory_state
 #
 # paths:
 #   public_chat: /ptaas/ajax/lory-public.php
-#   portal_chat: /ptaas/ajax/lory-chat.php
 #   mcp:         /ptaas/mcp/

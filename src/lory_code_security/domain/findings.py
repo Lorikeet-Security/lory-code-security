@@ -9,6 +9,11 @@ as fixed locally, and which files you associated with each one.
 Local triage state is deliberately separate from the platform's ``status``
 field. Marking something fixed here does not close it upstream; only a
 retest request (``retest.request``) does that, and it is a human decision.
+
+Findings are identified by :attr:`Finding.key`, not by ``id``. The platform
+keeps findings in several tables and their integer ids collide across them, so
+``id`` alone names up to one finding *per store*. Everything that indexes,
+caches, or addresses a finding uses the key.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from lory_code_security.client.mcp import McpClient
-from lory_code_security.core.errors import LoryConsoleError, ToolError
+from lory_code_security.core.errors import AmbiguousFindingError, LoryConsoleError, ToolError
 
 SEVERITY_ORDER = ("critical", "high", "medium", "low", "info")
 SEVERITY_RANK = {s: i for i, s in enumerate(SEVERITY_ORDER)}
@@ -72,8 +77,23 @@ class Finding:
         return SEVERITY_RANK.get(self.severity.lower(), len(SEVERITY_ORDER))
 
     @property
+    def key(self) -> str:
+        """What identifies this finding everywhere in the tool.
+
+        The platform's integer ids collide across finding stores, so a bare
+        ``id`` is not an identity. Prefer the platform's own prefixed ``ref``;
+        synthesise the same shape from ``store`` when a narrow read path did
+        not supply one; fall back to the id only when there is nothing else.
+        """
+        if self.ref:
+            return self.ref
+        if self.store:
+            return f"{self.store}-{self.id}"
+        return str(self.id)
+
+    @property
     def label(self) -> str:
-        return f"#{self.id} {self.title}"
+        return f"{self.key} {self.title}"
 
     @property
     def is_detailed(self) -> bool:
@@ -81,13 +101,16 @@ class Finding:
         return bool(self.description or self.evidence)
 
     def summary(self) -> str:
-        parts = [f"#{self.id}", self.severity.upper(), self.title]
+        parts = [self.key, self.severity.upper(), self.title]
         if self.affected_asset:
             parts.append(f"on {self.affected_asset}")
         return " ".join(p for p in parts if p)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            # `key` is what every command accepts back; emit it so a JSON or
+            # CSV export is addressable without the reader deriving it.
+            "key": self.key,
             "id": self.id,
             "title": self.title,
             "severity": self.severity,
@@ -185,6 +208,9 @@ class FindingStore:
     The cache exists so the TUI opens instantly and so `lory findings --cached`
     works offline. It is never a source of truth: anything that acts on a
     finding re-reads it from the platform first.
+
+    Everything is indexed by :attr:`Finding.key`. Indexing by ``id`` used to
+    drop one of every pair of findings that shared an integer id across stores.
     """
 
     def __init__(
@@ -194,7 +220,7 @@ class FindingStore:
     ) -> None:
         self.client = client
         self.cache_path = cache_path
-        self._by_id: dict[int, Finding] = {}
+        self._by_key: dict[str, Finding] = {}
         #: Which path last served a fetch, for the UI to show.
         self.last_source: str = "none"
 
@@ -246,6 +272,7 @@ class FindingStore:
             args["q"] = affected_asset
 
         result = self.client.call_tool("findings.search", args)
+        result.raise_for_error()
         findings = [Finding.from_row(row) for row in result.rows()]
         for finding in findings:
             self._merge(finding)
@@ -256,12 +283,12 @@ class FindingStore:
 
     def _merge(self, finding: Finding) -> None:
         """Cache a finding without losing a body an earlier fetch already got."""
-        existing = self._by_id.get(finding.id)
+        existing = self._by_key.get(finding.key)
         if existing is not None and existing.is_detailed and not finding.is_detailed:
             finding.description = existing.description
             finding.evidence = existing.evidence
             finding.remediation = existing.remediation
-        self._by_id[finding.id] = finding
+        self._by_key[finding.key] = finding
 
     def _fetch_mcp(
         self,
@@ -287,43 +314,84 @@ class FindingStore:
             args["affected_asset"] = affected_asset
 
         result = self.client.call_tool("findings.list", args)
+        result.raise_for_error()
         findings = [Finding.from_row(row) for row in result.rows()]
         for finding in findings:
-            existing = self._by_id.get(finding.id)
-            # findings.list returns no body; keep a detail fetch we already have.
-            if existing and existing.is_detailed and not finding.is_detailed:
-                finding.description = existing.description
-                finding.evidence = existing.evidence
-                finding.remediation = existing.remediation
-            self._by_id[finding.id] = finding
+            self._merge(finding)
 
         self.last_source = "mcp"
         self.save_cache()
         return sort_findings(findings)
 
-    def detail(self, finding_id: int, refresh: bool = False) -> Finding:
+    def resolve(self, selector: str) -> Finding:
+        """Find one cached finding from what the user typed.
+
+        Accepts a full key (``engagement-12``) or a bare id (``12``). A bare id
+        that names more than one finding raises rather than picking one, since
+        guessing would silently point `fix` and `retest` at the wrong finding.
+        """
+        selector = str(selector).strip()
+        if not selector:
+            raise ToolError("no finding given")
+
+        exact = self._by_key.get(selector)
+        if exact is not None:
+            return exact
+
+        if selector.isdigit():
+            matches = [f for f in self._by_key.values() if f.id == int(selector)]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise AmbiguousFindingError(
+                    f"#{selector} names {len(matches)} findings across stores. "
+                    "Use one of: " + ", ".join(sorted(f.key for f in matches)),
+                    candidates=sorted(f.key for f in matches),
+                )
+
+        raise ToolError(
+            f"no finding {selector!r} in the local cache. "
+            "Run `lory findings list` to refresh it."
+        )
+
+    def detail(self, selector: str, refresh: bool = False) -> Finding:
         """Fetch the full body of one finding.
 
         Uses ``findings.detail`` with the finding's prefixed ``ref`` when the
         server has it, since a bare id is ambiguous across stores. Falls back
         to ``findings.get``, which only resolves manual pentest findings.
         """
-        cached = self._by_id.get(finding_id)
+        try:
+            cached: Finding | None = self.resolve(selector)
+        except AmbiguousFindingError:
+            raise
+        except ToolError:
+            cached = None
+
         if cached is not None and cached.is_detailed and not refresh:
             return cached
 
         if self.client is None:
             if cached is not None:
                 return cached
-            raise ToolError(f"finding #{finding_id} is not cached and MCP is unavailable")
+            raise ToolError(f"finding {selector} is not cached and MCP is unavailable")
 
         ref = cached.ref if cached is not None else ""
+        finding_id = cached.id if cached is not None else _as_id(selector)
+
         if ref and self.client.has_tool("findings.detail"):
             result = self.client.call_tool("findings.detail", {"ref": ref})
             label = ref
-        else:
+        elif finding_id is not None:
             result = self.client.call_tool("findings.get", {"id": finding_id})
             label = f"#{finding_id}"
+        else:
+            raise ToolError(
+                f"{selector} is not in the local cache, and this server has no "
+                "findings.detail to look a ref up with. Run `lory findings list` first."
+            )
+
+        result.raise_for_error()
 
         data = result.structured
         if isinstance(data, list):
@@ -337,18 +405,29 @@ class FindingStore:
         if not finding.ref and ref:
             finding.ref = ref
             finding.store = cached.store if cached is not None else ""
-        self._by_id[finding.id] = finding
+        self._by_key[finding.key] = finding
         self.save_cache()
         return finding
 
-    def request_retest(self, finding_id: int, note: str = "") -> dict[str, Any]:
-        """Ask the Lorikeet team to re-test a finding you believe is fixed."""
+    def request_retest(self, finding: Finding, note: str = "") -> dict[str, Any]:
+        """Ask the Lorikeet team to re-test a finding you believe is fixed.
+
+        Sends the prefixed ``ref`` when the server understands it, so a retest
+        cannot land on the same-numbered finding in a different store.
+        """
         if self.client is None:
             raise ToolError("retest requests require an MCP token")
-        args: dict[str, Any] = {"finding_id": finding_id}
+
+        args: dict[str, Any] = {"finding_id": finding.id}
+        # Only when the server's own schema declares it: an unexpected argument
+        # is rejected outright by a strict tool.
+        if finding.ref and self.client.tool_accepts("retest.request", "ref"):
+            args["ref"] = finding.ref
         if note:
             args["note"] = note[:2000]
+
         result = self.client.call_tool("retest.request", args)
+        result.raise_for_error()
         return result.structured if isinstance(result.structured, dict) else {"raw": result.text}
 
     def search_kb(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -359,6 +438,7 @@ class FindingStore:
             result = self.client.call_tool(
                 "kb.search", {"q": query[:200], "limit": max(1, min(25, limit))}
             )
+            result.raise_for_error()
         except ToolError:
             # kb:read is a separate scope; a token without it should not break
             # the remediation flow, just make it thinner.
@@ -368,10 +448,10 @@ class FindingStore:
     # ── cache ───────────────────────────────────────────────────────────────
 
     def all(self) -> list[Finding]:
-        return sort_findings(self._by_id.values())
+        return sort_findings(self._by_key.values())
 
-    def get(self, finding_id: int) -> Finding | None:
-        return self._by_id.get(finding_id)
+    def get(self, key: str) -> Finding | None:
+        return self._by_key.get(str(key))
 
     def load_cache(self) -> list[Finding]:
         if not self.cache_path or not self.cache_path.exists():
@@ -384,7 +464,7 @@ class FindingStore:
         for row in rows if isinstance(rows, list) else []:
             if isinstance(row, dict):
                 finding = Finding.from_row(row)
-                self._by_id.setdefault(finding.id, finding)
+                self._by_key.setdefault(finding.key, finding)
         return self.all()
 
     def save_cache(self) -> None:
@@ -406,7 +486,12 @@ class FindingStore:
 
 
 class TriageLog:
-    """Local, developer-side workflow state. One JSON file, human-editable."""
+    """Local, developer-side workflow state. One JSON file, human-editable.
+
+    Keyed by :attr:`Finding.key`. Entries written by an older version were
+    keyed by the bare integer id; :meth:`_read` still finds those, so an
+    existing triage log keeps working after the upgrade.
+    """
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -430,28 +515,39 @@ class TriageLog:
         except OSError:
             pass
 
-    def state(self, finding_id: int) -> str:
-        return str(self.entries.get(str(finding_id), {}).get("state", "new"))
+    def _read(self, key: str) -> dict[str, Any]:
+        """The entry for a key, falling back to a pre-`key` numeric entry."""
+        key = str(key)
+        entry = self.entries.get(key)
+        if entry is not None:
+            return entry
+        legacy = key.rsplit("-", 1)[-1]
+        if legacy != key and legacy.isdigit():
+            return self.entries.get(legacy) or {}
+        return {}
 
-    def note(self, finding_id: int) -> str:
-        return str(self.entries.get(str(finding_id), {}).get("note", ""))
+    def state(self, key: str) -> str:
+        return str(self._read(key).get("state", "new"))
 
-    def files(self, finding_id: int) -> list[str]:
-        raw = self.entries.get(str(finding_id), {}).get("files", [])
+    def note(self, key: str) -> str:
+        return str(self._read(key).get("note", ""))
+
+    def files(self, key: str) -> list[str]:
+        raw = self._read(key).get("files", [])
         return [str(f) for f in raw] if isinstance(raw, list) else []
 
-    def set_state(self, finding_id: int, state: str, note: str = "") -> None:
+    def set_state(self, key: str, state: str, note: str = "") -> None:
         if state not in TRIAGE_STATES:
             raise ValueError(f"state must be one of: {', '.join(TRIAGE_STATES)}")
-        entry = self.entries.setdefault(str(finding_id), {})
+        entry = self.entries.setdefault(str(key), {})
         entry["state"] = state
         entry["updated_at"] = datetime.now(UTC).isoformat()
         if note:
             entry["note"] = note
         self.save()
 
-    def link_files(self, finding_id: int, paths: Iterable[str]) -> None:
-        entry = self.entries.setdefault(str(finding_id), {})
+    def link_files(self, key: str, paths: Iterable[str]) -> None:
+        entry = self.entries.setdefault(str(key), {})
         existing = set(entry.get("files") or [])
         entry["files"] = sorted(existing | {str(p) for p in paths})
         self.save()
@@ -482,7 +578,7 @@ def filter_findings(
         if needle:
             haystack = " ".join(
                 (finding.title, finding.affected_asset, finding.category,
-                 finding.cwe_id, finding.description, str(finding.id))
+                 finding.cwe_id, finding.description, str(finding.id), finding.key)
             ).lower()
             if needle not in haystack:
                 continue
@@ -501,3 +597,9 @@ def cwe_number(cwe_id: str) -> str:
     """``CWE-89`` → ``89``. Returns '' when there is no usable id."""
     match = re.search(r"(\d+)", cwe_id or "")
     return match.group(1) if match else ""
+
+
+def _as_id(selector: str) -> int | None:
+    """The integer id inside a selector, for the narrow ``findings.get`` path."""
+    tail = str(selector).strip().rsplit("-", 1)[-1]
+    return int(tail) if tail.isdigit() else None

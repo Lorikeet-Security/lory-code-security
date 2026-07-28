@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
 ]
 
@@ -38,6 +39,8 @@ tui = ["textual>=0.79"]
 dev = [
     "textual>=0.79",
     "pytest>=8.0",
+    # The TUI tests drive Textual's async test pilot.
+    "pytest-asyncio>=0.23",
     "ruff>=0.4",
 ]
 
@@ -67,3 +70,6 @@ select = ["E", "F", "I", "UP", "B", "W"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The TUI tests are `async def` against Textual's pilot; auto mode saves
+# decorating every one of them.
+asyncio_mode = "auto"

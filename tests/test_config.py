@@ -118,6 +118,26 @@ def test_code_context_is_off_by_default():
     assert Config().send_code_context is False
 
 
+def test_a_quoted_false_does_not_turn_code_sending_on(tmp_path):
+    """`bool("false")` is True, which used to silently enable source upload."""
+    for word in ("false", "False", "no", "off", "0"):
+        path = write(tmp_path, {"send_code_context": word, "verify_tls": word})
+        cfg = load(path)
+        assert cfg.send_code_context is False, word
+        assert cfg.verify_tls is False, word
+
+
+def test_quoted_truthy_words_still_parse(tmp_path):
+    for word in ("true", "YES", "on", "1"):
+        assert load(write(tmp_path, {"send_code_context": word})).send_code_context is True, word
+
+
+def test_an_unparseable_boolean_is_an_error_not_a_guess(tmp_path):
+    path = write(tmp_path, {"send_code_context": "maybe"})
+    with pytest.raises(ConfigError, match="send_code_context must be true or false"):
+        load(path)
+
+
 def test_written_config_is_not_world_readable(tmp_path):
     from lory_code_security.core.onboarding import Credentials, write_config
 

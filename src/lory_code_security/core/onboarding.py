@@ -30,6 +30,10 @@ from lory_code_security.core.errors import LoryConsoleError
 PORTAL_MCP_PATH = "/ptaas/dashboard/mcp.php"
 PORTAL_DOCS_PATH = "/ptaas/dashboard/mcp-docs"
 
+#: Any one of these makes findings readable. ``findings.search`` is the merged
+#: tool and is preferred; ``findings.list`` is the older, narrower path.
+READ_TOOLS = frozenset({"findings.search", "findings.list"})
+
 _TOKEN_RE = re.compile(r"lkmcp_[A-Za-z0-9_\-]{8,}")
 
 #: Where an existing Claude Code / Cursor MCP config might already hold a
@@ -168,7 +172,9 @@ def verify(creds: Credentials, timeout: float = 30.0, verify_tls: bool = True) -
         "protocol": info.get("protocolVersion"),
         "tools": tool_names,
         "company_id": company,
-        "can_read_findings": "findings.list" in tool_names,
+        # Either read path is enough. Requiring findings.list would call a
+        # server that only exposes the newer merged tool unusable.
+        "can_read_findings": bool(READ_TOOLS & set(tool_names)),
         "can_search_kb": "kb.search" in tool_names,
         "can_request_retest": "retest.request" in tool_names,
     }
@@ -208,7 +214,7 @@ _CONFIG_HEADER = """\
 # and must stay out of version control.
 #
 # Every value can be overridden by an environment variable:
-#   LORY_BASE_URL  LORY_MCP_TOKEN  LORY_SESSION_COOKIE  LORY_SURFACE
+#   LORY_BASE_URL  LORY_MCP_TOKEN  LORY_REPO_ROOT  LORY_TIMEOUT
 # Use ${VAR} as a value to read it from the environment at load time.
 
 """

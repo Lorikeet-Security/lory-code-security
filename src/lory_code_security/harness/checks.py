@@ -100,11 +100,16 @@ def available() -> list[str]:
 
 
 def describe(name: str) -> str:
-    """First line of a check's docstring, for `lory harness checks`."""
+    """First line of a check's docstring, for `lory harness checks`.
+
+    Docstrings are reStructuredText; strip the ``literal`` markers so the
+    terminal shows prose rather than markup.
+    """
     fn = _REGISTRY.get(name)
     if fn is None:
         return ""
-    return (fn.__doc__ or "").strip().split("\n")[0]
+    first = (fn.__doc__ or "").strip().split("\n")[0]
+    return first.replace("``", "")
 
 
 def run_check(name: str, obs: Observation, args: dict[str, Any]) -> CheckResult:

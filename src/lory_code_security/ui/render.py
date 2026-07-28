@@ -307,20 +307,24 @@ def severity_text(severity: str) -> Text:
 
 
 def render_findings_table(findings: list[Any], triage: Any = None) -> RenderableType:
-    """The triage list: severity, id, title, asset, and local workflow state."""
+    """The triage list: severity, ref, title, asset, and local workflow state.
+
+    The ref column carries the prefixed key rather than the bare id, because
+    that is what every other command takes back and ids repeat across stores.
+    """
     table = Table(box=None, header_style="bold cyan", pad_edge=False, expand=True)
     table.add_column("sev", width=4, no_wrap=True)
-    table.add_column("id", width=6, justify="right", no_wrap=True)
+    table.add_column("ref", width=15, no_wrap=True)
     table.add_column("title", ratio=3)
     table.add_column("asset", ratio=2, no_wrap=True)
     table.add_column("cwe", width=9, no_wrap=True)
     table.add_column("state", width=8, no_wrap=True)
 
     for finding in findings:
-        state = triage.state(finding.id) if triage is not None else ""
+        state = triage.state(finding.key) if triage is not None else ""
         table.add_row(
             severity_text(finding.severity),
-            Text(str(finding.id), style="dim"),
+            Text(finding.key, style="dim"),
             Text(finding.title or "(untitled)"),
             Text(finding.affected_asset or "—", style="dim"),
             Text(finding.cwe_id or "—", style="dim"),
@@ -347,7 +351,7 @@ def render_severity_summary(counts: dict[str, int]) -> RenderableType:
 
 def render_finding_header(finding: Any) -> RenderableType:
     head = Text()
-    head.append(f"#{finding.id}  ", style="dim")
+    head.append(f"{finding.key}  ", style="dim")
     head.append(f"{finding.title}\n", style="bold white")
     head.append(
         f"{finding.severity.upper()}",

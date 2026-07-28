@@ -40,7 +40,9 @@ PROTOCOL_VERSION = "2025-06-18"
 #: than listed, so nothing here points a user at a surface that is on its way
 #: out.
 SCOPE_CATALOG: dict[str, tuple[str, ...]] = {
-    "findings:read": ("findings.list", "findings.get", "scope.check"),
+    "findings:read": (
+        "findings.search", "findings.detail", "findings.list", "findings.get", "scope.check",
+    ),
     "findings:write": ("findings.create", "engagement.update"),
     "kb:read": ("kb.search",),
     "compliance:read": ("compliance.frameworks", "compliance.controls"),
@@ -105,6 +107,16 @@ class McpToolResult:
         except (json.JSONDecodeError, ValueError):
             return None
 
+    def raise_for_error(self) -> None:
+        """Raise if the tool set ``isError``, carrying the server's own message.
+
+        MCP reports tool-level failures in the result rather than as a JSON-RPC
+        error, so nothing raises on its own. Callers that act on the payload
+        must call this first, or a refusal reads as an empty result.
+        """
+        if self.is_error:
+            raise ToolError(self.text.strip() or f"{self.tool} reported an error")
+
     def rows(self) -> list[dict[str, Any]]:
         """List-shaped tool output as a list of dicts; ``[]`` for anything else."""
         data = self.structured
@@ -132,7 +144,7 @@ class McpClient:
         self.url = cfg.mcp_url()
         self.token = cfg.mcp_token
         self._id = 0
-        self._tool_names: set[str] | None = None
+        self._tools: dict[str, McpTool] | None = None
         self.server_info: dict[str, Any] = {}
         self.instructions: str = ""
 
@@ -207,6 +219,15 @@ class McpClient:
             self.instructions = str(result.get("instructions") or "")
         return result if isinstance(result, dict) else {}
 
+    def _catalog(self) -> dict[str, McpTool]:
+        """Every advertised tool by name, fetched once per session."""
+        if self._tools is None:
+            try:
+                self.list_tools()
+            except LoryConsoleError:
+                self._tools = {}
+        return self._tools or {}
+
     def has_tool(self, name: str) -> bool:
         """Whether the server exposes a tool, cached for the session.
 
@@ -214,12 +235,17 @@ class McpClient:
         simply not be there yet. Callers use this to pick a path rather than
         discovering the gap through an error.
         """
-        if self._tool_names is None:
-            try:
-                self._tool_names = {t.name for t in self.list_tools()}
-            except LoryConsoleError:
-                self._tool_names = set()
-        return name in self._tool_names
+        return name in self._catalog()
+
+    def tool_accepts(self, name: str, argument: str) -> bool:
+        """Whether a tool's advertised schema declares an argument.
+
+        Lets a caller send an optional refinement (a prefixed ``ref`` alongside
+        a numeric id, say) only where the server understands it, instead of
+        having a strict schema reject the whole call.
+        """
+        tool = self._catalog().get(name)
+        return tool is not None and argument in tool.arg_names
 
     def list_tools(self) -> list[McpTool]:
         result = self._rpc("tools/list")
@@ -237,7 +263,7 @@ class McpClient:
                     annotations=entry.get("annotations") or {},
                 )
             )
-        self._tool_names = {t.name for t in tools}
+        self._tools = {t.name: t for t in tools}
         return tools
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> McpToolResult:

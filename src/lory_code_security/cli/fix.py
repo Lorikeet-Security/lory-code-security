@@ -12,7 +12,7 @@ from lory_code_security.ui import render
 
 
 @click.command()
-@click.argument("finding_id", type=int)
+@click.argument("finding_ref")
 @CONFIG_OPTION
 @click.option("--code", "include_code", is_flag=True,
               help="Attach local source excerpts to the prompt. Off by default.")
@@ -20,14 +20,14 @@ from lory_code_security.ui import render
 @click.option("--ask", "question", default="", help="Replace the default question.")
 @click.option("--dry-run", is_flag=True, help="Print the exact prompt and send nothing.")
 def fix(
-    finding_id: int, config_path: str, include_code: bool, no_kb: bool,
+    finding_ref: str, config_path: str, include_code: bool, no_kb: bool,
     question: str, dry_run: bool,
 ) -> None:
     """Ask Lory for a code-level fix for one finding.
 
-    Builds a prompt from the finding, optionally the knowledge base entry for
-    its vulnerability class, and optionally excerpts of your local source, then
-    sends it to Lory.
+    FINDING_REF is a ref or an id. Builds a prompt from the finding, optionally
+    the knowledge base entry for its vulnerability class, and optionally
+    excerpts of your local source, then sends it to Lory.
 
     Source is attached only with --code (or send_code_context: true in the
     config). Use --dry-run to see exactly what would be sent before sending it.
@@ -39,7 +39,7 @@ def fix(
     store.load_cache()
 
     try:
-        finding = store.detail(finding_id)
+        finding = store.detail(finding_ref)
     except LoryConsoleError as exc:
         die(str(exc))
         return
@@ -85,6 +85,6 @@ def fix(
         console.print(render.render_problems(problems))
 
     console.print(
-        f"\n[dim]When it is fixed:  lory triage {finding_id} fixed  "
-        f"→  lory retest {finding_id}[/dim]"
+        f"\n[dim]When it is fixed:  lory triage {finding.key} fixed  "
+        f"→  lory retest {finding.key}[/dim]"
     )

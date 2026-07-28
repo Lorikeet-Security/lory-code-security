@@ -39,3 +39,16 @@ class ToolError(LoryConsoleError):
         super().__init__(message)
         self.code = code
         self.data = data
+
+
+class AmbiguousFindingError(ToolError):
+    """A bare finding id named more than one finding.
+
+    Integer ids collide across the platform's finding stores, so this is the
+    normal outcome of typing ``12`` when both ``pentest-12`` and
+    ``engagement-12`` exist. Never resolved by guessing.
+    """
+
+    def __init__(self, message: str, candidates: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.candidates = candidates or []

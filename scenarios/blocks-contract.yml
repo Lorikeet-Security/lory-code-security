@@ -1,7 +1,7 @@
 # The block contract is the single point of failure shared by every chat
-# surface: public site, portal, voice, email, partners. A malformed edit to
-# response-format-blocks.md in the admin console breaks all of them at once, and
-# today the first signal is a user complaint. These steps are that signal.
+# surface Lory answers on: web widget, voice, email, partners. A malformed edit
+# to response-format-blocks.md in the admin console breaks all of them at once,
+# and today the first signal is a user complaint. These steps are that signal.
 
 name: blocks-contract
 description: response-format-blocks.md still holds after a skill edit.

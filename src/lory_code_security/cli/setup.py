@@ -156,8 +156,23 @@ def doctor(config_path: str) -> None:
             client.initialize()
             tools = [t.name for t in client.list_tools()]
             console.print(f"[green]✓[/green] MCP connected, {len(tools)} tools")
+
+            # Findings are readable over either path, so report on whichever
+            # this server has rather than insisting on the legacy tool.
+            read_tools = sorted(onboarding.READ_TOOLS & set(tools))
+            if read_tools:
+                console.print(
+                    f"[green]✓[/green] {', '.join(read_tools)} (findings triage): available"
+                )
+            else:
+                console.print(
+                    "[yellow]![/yellow] no findings read tool "
+                    f"({' or '.join(sorted(onboarding.READ_TOOLS))}): "
+                    "NOT in this token's scopes"
+                )
+                ok = False
+
             for tool, label in (
-                ("findings.list", "findings triage"),
                 ("kb.search", "remediation lookups"),
                 ("retest.request", "retest requests"),
             ):
@@ -165,8 +180,6 @@ def doctor(config_path: str) -> None:
                 mark = "[green]✓[/green]" if present else "[yellow]![/yellow]"
                 state = "available" if present else "NOT in this token's scopes"
                 console.print(f"{mark} {tool} ({label}): {state}")
-                if tool == "findings.list" and not present:
-                    ok = False
         except LoryConsoleError as exc:
             console.print(f"[red]✗[/red] MCP: {exc}")
             ok = False

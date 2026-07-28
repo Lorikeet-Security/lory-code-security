@@ -98,8 +98,9 @@ The portal is the system of record. It is the wrong place to fix code.
 
 ### How it reads your findings
 
-Two read paths, both scoped to your company by the platform. The tool prefers
-the portal and falls back to MCP.
+One credential, scoped to your company by the platform: the `lkmcp_` bearer
+token from your portal's MCP page. It works headless, so the same setup runs on
+your laptop and in CI.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -110,47 +111,50 @@ the portal and falls back to MCP.
 │   incident response   ──┘                          │                   │
 │                                                    ▼                   │
 │                                            published to your portal    │
-└──────────────────┬──────────────────────────────────┬──────────────────┘
-                   │                                  │
-      session cookie (PHPSESSID)          bearer token (lkmcp_…)
-                   │                                  │
-                   ▼                                  ▼
-   /ptaas/dashboard/ajax/                       /ptaas/mcp/
-     findings-export.php                          findings.list
-     attestation.php                              findings.get
-     lory-findings-review.php                     kb.search
-                   │                              scope.check
-                   │                              retest.request
-                   │                                  │
-                   └──────────────┬───────────────────┘
-                                  ▼
-                        ┌──────────────────┐
-                        │  FindingStore    │  normalises both shapes,
-                        │  + local cache   │  caches to .lory_state/
-                        └────────┬─────────┘
-                                 ▼
-                   TUI  ·  CLI  ·  harness  ·  SARIF export
+└───────────────────────────────┬────────────────────────────────────────┘
+                                │
+                    bearer token (lkmcp_…)
+                                │
+                                ▼
+                          /ptaas/mcp/
+              findings.search   every store, prefixed refs
+              findings.detail   one finding, by ref
+              findings.list     manual pentest only (fallback)
+              findings.get      one finding, by id (fallback)
+              kb.search   ·   scope.check   ·   retest.request
+                                │
+                                ▼
+                      ┌──────────────────┐
+                      │  FindingStore    │  normalises every row shape,
+                      │  + local cache   │  caches to .lory_state/
+                      └────────┬─────────┘
+                               ▼
+                 TUI  ·  CLI  ·  harness  ·  SARIF export
 ```
 
-| | portal export | MCP |
+| | `findings.search` | `findings.list` |
 |---|---|---|
-| Auth | dashboard session cookie | `lkmcp_` bearer token |
-| Rows | up to 5000 | 50 per call |
-| Bodies | description, evidence, remediation, CVSS vector, provenance | only via `findings.get`, one at a time |
-| Formats | JSON, CSV, **SARIF** | JSON |
-| Headless / CI | no (cookies expire) | **yes** |
-| Extras | attestation letters, review queue | scope checks, KB search, retest |
+| Covers | every store: engagement, incident, manual pentest | manual pentest only |
+| Identity | prefixed `ref` per row (`engagement-12`) | bare integer id |
+| Bodies | via `findings.detail` | via `findings.get` |
+| Availability | current servers | every server |
 
-Unreviewed AI findings are never returned on either path — the export applies
-the same `review_state` gate the portal reads through, so this tool cannot see a
-finding a human has not approved.
+The tool prefers `findings.search` and falls back automatically. Unreviewed AI
+findings are never returned on either path — the same `review_state` gate the
+portal reads through applies here, so this tool cannot see a finding a human has
+not approved.
 
-> **The two paths do not cover the same ground.** The platform keeps findings in
-> more than one store: engagement findings from Lory's engine, manual pentest
-> findings, and incident-response findings each live separately. MCP's
-> `findings.list` reads one of them; the portal export reads another. An empty
-> list therefore usually means *wrong path*, not *nothing to fix* — the TUI says
-> which path it used and what it does not cover.
+> **Findings are identified by `ref`, not by id.** Integer ids repeat across the
+> finding stores, so `12` can name both `pentest-12` and `engagement-12`. Every
+> command takes either form and refuses to guess when a bare id is ambiguous.
+
+> **The two read paths do not cover the same ground.** The platform keeps
+> findings in more than one store: engagement findings from Lory's engine,
+> manual pentest findings, and incident-response findings each live separately.
+> `findings.search` reads all of them; `findings.list` reads only the manual
+> pentest store. On an older server an empty list therefore usually means
+> *narrow path*, not *nothing to fix* — the TUI says which path it used and
+> what that path does not cover.
 
 ### The remediation loop
 
@@ -171,7 +175,7 @@ finding a human has not approved.
      │                      [+ source, only if you opted in]
      │                             │
      │                             ▼
-     │                    Lory (portal surface) ──▶ concrete fix + how to verify
+     │                    Lory ──▶ concrete fix + how to verify
      │
      ├─ m  mark fixed ───▶ local triage state only
      │
@@ -188,13 +192,13 @@ finding, and that stays a human decision.
 lory-code-security/
 ├── src/lory_code_security/
 │   ├── core/            config, errors, portal-driven onboarding
-│   ├── client/          chat.py · mcp.py · portal.py
+│   ├── client/          chat.py · mcp.py
 │   ├── domain/          findings · blocks · codebase · remediate
 │   ├── ui/              render.py (Rich) · app.py + app.tcss (Textual)
 │   ├── harness/         scenario · checks · runner · report
 │   └── cli/             one module per command group
 ├── scenarios/           YAML scenarios for the harness
-├── tests/               119 tests, no network required
+├── tests/               no network required
 ├── config.example.yml
 └── README.md
 ```
@@ -259,8 +263,7 @@ lory doctor
 ```
 
 `doctor` checks config validity, file permissions, platform reachability, which
-tools your token's scopes unlock, whether the chat surface can see your
-findings, and whether `repo_root` is a git repository.
+tools your token's scopes unlock, and whether `repo_root` is a git repository.
 
 ---
 
@@ -273,13 +276,13 @@ lory tui
 ```
 ┌─ FINDINGS ─────────────────┬─ DETAIL ──────────────────────┬─ LORY ─────────────┐
 │ filter…                    │ ┌───────────────────────────┐ │                    │
-│                            │ │ #41  SQL injection in the │ │ › How do I fix     │
-│ sev  id     title       st │ │      report filter        │ │   finding #41?     │
-│ CRIT 41  SQL injection   ~ │ │ CRITICAL  CVSS 9.8 CWE-89 │ │                    │
-│ HIGH 38  Reflected XSS     │ │ app.example.com/reports   │ │ Use a parameterised│
-│ HIGH 36  IDOR on /orders ✓ │ └───────────────────────────┘ │ query. The driver  │
-│ MED  33  Verbose errors    │ status      Open              │ already supports…  │
-│ LOW  29  Missing HSTS      │ found       2026-07-14        │                    │
+│                            │ │ pentest-41  SQL injection │ │ › How do I fix     │
+│ sev  ref          title st │ │   in the report filter    │ │   pentest-41?      │
+│ CRIT pentest-41   SQLi   ~ │ │ CRITICAL  CVSS 9.8 CWE-89 │ │                    │
+│ HIGH engagement-38 XSS     │ │ app.example.com/reports   │ │ Use a parameterised│
+│ HIGH pentest-36   IDOR   ✓ │ └───────────────────────────┘ │ query. The driver  │
+│ MED  incident-33  Errors   │ status      Open              │ already supports…  │
+│ LOW  engagement-29 HSTS    │ found       2026-07-14        │                    │
 │                            │ local       fixing            │  ▸ Show me the fix │
 │                            │                               │  ▸ How do I verify │
 │                            │ Description                   │                    │
@@ -289,14 +292,14 @@ lory tui
 │                            │ Local code leads              │ ask Lory…          │
 │                            │ src/reports.py:88  dateFrom   │                    │
 ├────────────────────────────┴───────────────────────────────┴────────────────────┤
-│ 5 findings   1 C  2 H  1 M  1 L          12 findings via portal                 │
+│ 5 findings   1 C  2 H  1 M  1 L          5 findings via mcp:search              │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 | Key | Action |
 |---|---|
 | `↑` `↓` | Move through findings |
-| `/` | Filter (title, asset, CWE, id) · `esc` clears |
+| `/` | Filter (title, asset, CWE, ref) · `esc` clears |
 | `t` | **Trace** — find local code for this finding |
 | `f` | **Fix** — ask Lory, seeded with the finding |
 | `l` | Toggle the Lory pane |
@@ -319,27 +322,28 @@ lory doctor                    Check config, connectivity, scopes, repo detectio
 lory tui                       Open the cockpit
 
 lory findings list             List findings, most severe first
-lory findings show <id>        Full body of one finding
-lory findings export           Export as JSON, CSV, or Markdown
+lory findings show <ref>       Full body of one finding
+lory findings export           Export as JSON, CSV, Markdown, or SARIF
 
-lory trace <id>                Show local code that may cause a finding
-lory fix <id>                  Ask Lory for the code-level fix
-lory triage <id> <state>       Local workflow state: new|reading|fixing|fixed|wontfix
-lory retest <id>               Ask the Lorikeet team to re-test (confirmed)
+lory trace <ref>               Show local code that may cause a finding
+lory fix <ref>                 Ask Lory for the code-level fix
+lory triage <ref> <state>      Local workflow state: new|reading|fixing|fixed|wontfix
+lory retest <ref>              Ask the Lorikeet team to re-test (confirmed)
 
 lory ask "<question>"          One-shot question to Lory
 lory chat                      Interactive chat
 
 lory mcp tools                 List tools your token unlocks
 lory mcp call <tool> '<json>'  Call one MCP tool directly
-lory portal export             SARIF / CSV / JSON export from the portal
-lory portal attestation <id>   Attestation letter for an engagement
-lory portal review             AI review queue (staff accounts)
 
 lory harness run <paths>       Run YAML scenarios against Lory
 lory harness lint <paths>      Parse scenarios without contacting Lory
 lory harness checks            List available assertions
 ```
+
+`<ref>` is a finding's prefixed ref (`engagement-12`) or a bare id (`12`). A
+bare id that names findings in more than one store is rejected with the list of
+refs to choose from, rather than resolved by guessing.
 
 A typical session:
 
@@ -393,12 +397,12 @@ Application source outranks tests and fixtures; `node_modules`, `vendor`,
 
 ## SARIF and CI
 
-The portal export speaks SARIF 2.1.0, which GitHub code scanning and Microsoft
-Defender both ingest natively. That turns an engagement into inline annotations
-on the code with no integration work:
+`lory findings export` writes SARIF 2.1.0, generated locally from the findings
+it read, so it needs only the bearer token and runs headless:
 
 ```bash
-lory portal export --format sarif --out findings.sarif
+export LORY_MCP_TOKEN=lkmcp_…
+lory findings export --format sarif --out findings.sarif
 
 gh api --method POST /repos/:owner/:repo/code-scanning/sarifs \
   -f commit_sha="$(git rev-parse HEAD)" \
@@ -406,18 +410,17 @@ gh api --method POST /repos/:owner/:repo/code-scanning/sarifs \
   -f sarif="$(gzip -c findings.sarif | base64 -w0)"
 ```
 
-Filter what you publish:
+> **Findings are not source locations.** A finding is about a deployed asset,
+> so each SARIF result carries the asset URI rather than a file and line —
+> guessing a path would put a wrong annotation on a pull request. GitHub code
+> scanning ingests the run and shows the results, but it cannot anchor them to
+> a diff. Use `lory trace <ref>` for the mapping onto local code.
+
+Other formats, and filtering what you publish:
 
 ```bash
-lory portal export --format sarif --severity critical --severity high --status open
-lory portal export --format csv --source ai        # only what Lory's engine found
-```
-
-For headless pipelines use MCP, which authenticates by token rather than by a
-cookie that expires:
-
-```bash
-export LORY_MCP_TOKEN=lkmcp_…
+lory findings export --format csv  --out findings.csv
+lory findings export --format json --out findings.json
 lory findings list --severity critical --json > critical.json
 ```
 
@@ -459,7 +462,6 @@ A scenario is YAML. A step is either a `chat` turn or an `mcp` tool call:
 name: guardrails
 description: Persona lock and prompt-injection resistance.
 tags: [safety]
-surface: public
 
 steps:
   - name: system prompt is not disclosed on request
@@ -516,10 +518,10 @@ it to**. There is no hidden path that uploads a repository.
   best-effort defence in depth, not a guarantee; do not rely on it to sanitise a
   repository you would not otherwise share.
 
-Credentials at rest: `config.yml` holds a bearer token and a session cookie.
-`lory init` creates it mode `0600`, `lory doctor` warns if the permissions drift,
-and it is in `.gitignore`. Prefer `${LORY_MCP_TOKEN}` and environment variables
-in shared or CI environments.
+Credentials at rest: `config.yml` holds the bearer token. `lory init` creates it
+mode `0600`, `lory doctor` warns if the permissions drift, and it is in
+`.gitignore`. Prefer `${LORY_MCP_TOKEN}` and environment variables in shared or
+CI environments.
 
 ---
 
@@ -532,18 +534,17 @@ See [`config.example.yml`](config.example.yml) for the annotated version.
 ```yaml
 base_url: https://lorikeetsecurity.com
 
-# Read paths — configure either or both.
-mcp_token: ${LORY_MCP_TOKEN}          # lkmcp_… from the portal's MCP page
-session_cookie: ${LORY_SESSION_COOKIE} # PHPSESSID of a logged-in portal session
-
-# Which Lory answers. `portal` sees your findings; `public` is the sales persona.
-surface: portal
+# The only credential: lkmcp_… from the portal's MCP page.
+mcp_token: ${LORY_MCP_TOKEN}
 
 repo_root: .
 send_code_context: false               # source is opt-in, always
 max_context_lines: 120
 
+stream: true
+history_limit: 20
 timeout: 60
+verify_tls: true
 state_dir: .lory_state
 ```
 
@@ -551,15 +552,13 @@ state_dir: .lory_state
 |---|---|
 | `LORY_BASE_URL` | `base_url` |
 | `LORY_MCP_TOKEN` | `mcp_token` |
-| `LORY_SESSION_COOKIE` | `session_cookie` |
-| `LORY_SURFACE` | `surface` |
 | `LORY_REPO_ROOT` | `repo_root` |
 | `LORY_TIMEOUT` | `timeout` |
 | `LORY_CONFIG` | path to the config file |
 
-`surface` matters more than it looks. The public endpoint runs a sales persona
-with no access to your findings; remediation answers from it are worth much
-less. The tool warns whenever it falls back to it.
+A config written for the older session-cookie build still loads: `session_cookie`,
+`session_cookie_name`, `surface`, and `paths.portal_chat` are no longer read, and
+`lory doctor` lists them so you can delete them.
 
 ---
 

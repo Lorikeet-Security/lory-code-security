@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from lory_code_security.core.errors import AmbiguousFindingError, ToolError
 from lory_code_security.domain.findings import (
     Finding,
     FindingStore,
@@ -125,31 +128,45 @@ def test_cwe_number_extraction():
 
 def test_triage_round_trips(tmp_path):
     log = TriageLog(tmp_path / "triage.json")
-    assert log.state(7) == "new"
+    assert log.state("pentest-7") == "new"
 
-    log.set_state(7, "fixing", note="patching the encoder")
-    log.link_files(7, ["src/search.py"])
+    log.set_state("pentest-7", "fixing", note="patching the encoder")
+    log.link_files("pentest-7", ["src/search.py"])
 
     reloaded = TriageLog(tmp_path / "triage.json")
-    assert reloaded.state(7) == "fixing"
-    assert reloaded.note(7) == "patching the encoder"
-    assert reloaded.files(7) == ["src/search.py"]
+    assert reloaded.state("pentest-7") == "fixing"
+    assert reloaded.note("pentest-7") == "patching the encoder"
+    assert reloaded.files("pentest-7") == ["src/search.py"]
+
+
+def test_triage_keeps_two_stores_apart(tmp_path):
+    """Marking one finding fixed must not mark its id-twin in another store."""
+    log = TriageLog(tmp_path / "triage.json")
+    log.set_state("pentest-12", "fixed")
+    assert log.state("pentest-12") == "fixed"
+    assert log.state("engagement-12") == "new"
+
+
+def test_triage_reads_a_pre_key_numeric_entry(tmp_path):
+    """A triage log written before refs were the identity still resolves."""
+    path = tmp_path / "triage.json"
+    path.write_text(json.dumps({"12": {"state": "fixing", "note": "old entry"}}))
+
+    log = TriageLog(path)
+    assert log.state("pentest-12") == "fixing"
+    assert log.note("pentest-12") == "old entry"
 
 
 def test_triage_rejects_an_unknown_state(tmp_path):
     log = TriageLog(tmp_path / "triage.json")
-    try:
-        log.set_state(1, "definitely-fixed-trust-me")
-    except ValueError as exc:
-        assert "state must be one of" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected ValueError")
+    with pytest.raises(ValueError, match="state must be one of"):
+        log.set_state("1", "definitely-fixed-trust-me")
 
 
 def test_triage_survives_a_corrupt_file(tmp_path):
     path = tmp_path / "triage.json"
     path.write_text("{not json")
-    assert TriageLog(path).state(1) == "new"
+    assert TriageLog(path).state("1") == "new"
 
 
 def test_to_dict_is_json_serialisable():
@@ -162,29 +179,48 @@ def test_to_dict_is_json_serialisable():
 class FakeMcp:
     """Minimal McpClient stand-in: records calls, serves canned rows."""
 
-    def __init__(self, tools: set[str], rows: list[dict] | None = None) -> None:
+    def __init__(
+        self,
+        tools: set[str],
+        rows: list[dict] | None = None,
+        is_error: bool = False,
+        error_text: str = "",
+        schemas: dict[str, list[str]] | None = None,
+    ) -> None:
         self._tools = tools
         self._rows = rows or []
+        self._is_error = is_error
+        self._error_text = error_text
+        self._schemas = schemas or {}
         self.calls: list[tuple[str, dict]] = []
 
     def has_tool(self, name: str) -> bool:
         return name in self._tools
 
+    def tool_accepts(self, name: str, argument: str) -> bool:
+        return argument in self._schemas.get(name, [])
+
     def call_tool(self, name: str, args: dict):
         self.calls.append((name, args))
+        return FakeResult(self._rows, self._is_error, self._error_text)
 
-        class Result:
-            def __init__(self, rows):
-                self._rows = rows
 
-            def rows(self):
-                return self._rows
+class FakeResult:
+    def __init__(self, rows, is_error=False, text=""):
+        self._rows = rows
+        self.is_error = is_error
+        self.text = text
 
-            @property
-            def structured(self):
-                return self._rows[0] if self._rows else {}
+    def raise_for_error(self):
+        if self.is_error:
+            raise ToolError(self.text or "tool reported an error")
 
-        return Result(self._rows)
+    def rows(self):
+        return [] if self.is_error else self._rows
+
+    @property
+    def structured(self):
+        return self._rows[0] if self._rows else {}
 
 
 SEARCH_ROW = {
@@ -228,7 +264,7 @@ def test_detail_routes_by_ref_when_available(tmp_path):
     store = FindingStore(client, cache_path=tmp_path / "c.json")
     store.fetch()
 
-    finding = store.detail(12, refresh=True)
+    finding = store.detail("engagement-12", refresh=True)
 
     assert client.calls[-1] == ("findings.detail", {"ref": "engagement-12"})
     assert finding.is_detailed
@@ -239,6 +275,94 @@ def test_detail_falls_back_to_findings_get_without_the_tool(tmp_path):
     store = FindingStore(client, cache_path=tmp_path / "c.json")
     store.fetch()
 
-    store.detail(5, refresh=True)
+    store.detail("5", refresh=True)
 
     assert client.calls[-1] == ("findings.get", {"id": 5})
+
+
+# ── identity: ids collide across stores ─────────────────────────────────────
+
+COLLIDING_ROWS = [
+    {"ref": "pentest-12", "store": "pentest", "id": 12,
+     "title": "SQL injection", "severity": "critical"},
+    {"ref": "engagement-12", "store": "engagement", "id": 12,
+     "title": "Reflected XSS", "severity": "high"},
+    {"ref": "incident-31", "store": "incident", "id": 31,
+     "title": "Missing HSTS", "severity": "low"},
+]
+
+
+def test_key_prefers_ref_then_store_then_id():
+    assert Finding.from_row({"id": 12, "ref": "engagement-12"}).key == "engagement-12"
+    assert Finding.from_row({"id": 12, "store": "pentest"}).key == "pentest-12"
+    assert Finding.from_row({"id": 12}).key == "12"
+
+
+def test_colliding_ids_both_survive_the_cache(tmp_path):
+    """Indexing by id silently dropped one of every same-id pair."""
+    cache = tmp_path / "c.json"
+    client = FakeMcp({"findings.search"}, COLLIDING_ROWS)
+    store = FindingStore(client, cache_path=cache)
+
+    assert len(store.fetch()) == 3
+    assert len(store.all()) == 3
+
+    reloaded = FindingStore(None, cache_path=cache).load_cache()
+    assert {f.key for f in reloaded} == {"pentest-12", "engagement-12", "incident-31"}
+
+
+def test_a_bare_ambiguous_id_is_refused_not_guessed(tmp_path):
+    store = FindingStore(FakeMcp({"findings.search"}, COLLIDING_ROWS),
+                         cache_path=tmp_path / "c.json")
+    store.fetch()
+
+    with pytest.raises(AmbiguousFindingError) as excinfo:
+        store.resolve("12")
+    assert excinfo.value.candidates == ["engagement-12", "pentest-12"]
+
+    # ...but an unambiguous id still resolves, and a full ref always does.
+    assert store.resolve("31").key == "incident-31"
+    assert store.resolve("pentest-12").severity == "critical"
+    assert store.resolve("engagement-12").severity == "high"
+
+
+def test_resolve_rejects_an_unknown_selector(tmp_path):
+    store = FindingStore(FakeMcp({"findings.search"}, COLLIDING_ROWS),
+                         cache_path=tmp_path / "c.json")
+    store.fetch()
+    with pytest.raises(ToolError, match="no finding"):
+        store.resolve("nope-999")
+
+
+# ── tool-level errors must not read as success ──────────────────────────────
+
+
+def test_a_failed_retest_raises_instead_of_reporting_success(tmp_path):
+    """isError used to be ignored, so a refused retest printed a green tick."""
+    client = FakeMcp({"retest.request"}, [], is_error=True,
+                     error_text="retest denied: engagement is closed")
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+
+    with pytest.raises(ToolError, match="engagement is closed"):
+        store.request_retest(Finding(id=31, ref="incident-31"), "fixed it")
+
+
+def test_a_failed_search_raises_instead_of_looking_empty(tmp_path):
+    client = FakeMcp({"findings.search"}, [], is_error=True, error_text="scope denied")
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+
+    with pytest.raises(ToolError, match="scope denied"):
+        store.fetch()
+
+
+def test_retest_sends_the_ref_only_where_the_schema_takes_it(tmp_path):
+    finding = Finding(id=12, ref="engagement-12", store="engagement")
+
+    strict = FakeMcp({"retest.request"}, [{"ok": True}])
+    FindingStore(strict, cache_path=tmp_path / "a.json").request_retest(finding)
+    assert strict.calls[-1] == ("retest.request", {"finding_id": 12})
+
+    modern = FakeMcp({"retest.request"}, [{"ok": True}],
+                     schemas={"retest.request": ["finding_id", "ref", "note"]})
+    FindingStore(modern, cache_path=tmp_path / "b.json").request_retest(finding)
+    assert modern.calls[-1] == ("retest.request", {"finding_id": 12, "ref": "engagement-12"})

@@ -147,6 +147,32 @@ def _resolve_env(value: Any) -> Any:
     return value
 
 
+_FALSE_WORDS = frozenset({"false", "no", "off", "0", "n", ""})
+_TRUE_WORDS = frozenset({"true", "yes", "on", "1", "y"})
+
+
+def _as_bool(value: Any, default: bool, key: str) -> bool:
+    """Parse a YAML boolean, honouring quoted spellings.
+
+    ``bool("false")`` is ``True``, so a quoted ``send_code_context: "false"``
+    used to silently turn source uploading *on*. Anything unrecognised is an
+    error rather than a guess, because the wrong guess here leaks code.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _FALSE_WORDS:
+            return False
+        if word in _TRUE_WORDS:
+            return True
+    raise ConfigError(f"{key} must be true or false, got {value!r}")
+
+
 def load(config_path: str | Path = "config.yml") -> Config:
     """Load config from YAML plus environment overrides.
 
@@ -193,11 +219,13 @@ def load(config_path: str | Path = "config.yml") -> Config:
         base_url=str(get("base_url", "https://lorikeetsecurity.com")).rstrip("/"),
         mcp_token=get("mcp_token") or None,
         timeout=timeout,
-        stream=bool(raw.get("stream", True)),
+        stream=_as_bool(raw.get("stream"), True, "stream"),
         history_limit=int(raw.get("history_limit", 20)),
-        verify_tls=bool(raw.get("verify_tls", True)),
+        verify_tls=_as_bool(raw.get("verify_tls"), True, "verify_tls"),
         repo_root=Path(str(repo_root)).expanduser().resolve(),
-        send_code_context=bool(raw.get("send_code_context", False)),
+        send_code_context=_as_bool(
+            raw.get("send_code_context"), False, "send_code_context"
+        ),
         max_context_lines=int(raw.get("max_context_lines", 120)),
         paths=paths,
         state_dir=Path(state_dir) if state_dir else STATE_DIR,
