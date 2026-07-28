@@ -71,8 +71,16 @@ def render_reply(
 
 
 def render_suggestions(suggestions: list[str]) -> RenderableType:
-    chips = [Text(f" {s} ", style="black on bright_cyan") for s in suggestions]
-    return Group(Text(""), Columns(chips, padding=(0, 1)))
+    """Follow-up prompts, as a stacked list rather than filled chips.
+
+    Chips were laid out in columns, which stacks unevenly in a narrow pane and
+    fights the severity colours for attention. These are offers, not alerts.
+    """
+    body = Text()
+    for suggestion in suggestions:
+        body.append("\n› ", style="bold cyan")
+        body.append(suggestion, style="cyan")
+    return body
 
 
 # ── per-block renderers ─────────────────────────────────────────────────────

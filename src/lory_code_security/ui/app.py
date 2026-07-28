@@ -128,16 +128,16 @@ class LoryApp(App[None]):
         with Vertical(id="root"):
             with Horizontal(id="body"):
                 with Vertical(id="sidebar"):
-                    yield Static("FINDINGS", classes="pane-title")
+                    yield Static("▌ FINDINGS", classes="pane-title")
                     yield Input(placeholder="filter…", id="filter")
                     yield DataTable(id="findings-table", cursor_type="row")
                     yield Static("", id="counts")
                 with Vertical(id="detail-pane"):
-                    yield Static("DETAIL", classes="pane-title")
+                    yield Static("▌ DETAIL", classes="pane-title")
                     with VerticalScroll(id="detail-scroll"):
                         yield Static(id="detail")
                 with Vertical(id="lory-pane"):
-                    yield Static("LORY", classes="pane-title")
+                    yield Static("▌ LORY", classes="pane-title")
                     with VerticalScroll(id="lory-scroll"):
                         yield Static(id="lory-intro")
                     yield Input(placeholder="ask Lory…", id="lory-input")
@@ -157,14 +157,40 @@ class LoryApp(App[None]):
         self.load_findings(refresh=not self.start_cached)
 
     def _lory_intro(self) -> RenderableType:
-        intro = Text()
-        intro.append(
-            "Lory answers from the finding carried in the prompt: its "
-            "description, evidence, and knowledge base entries.\n",
+        """The empty state: what you can do here, not how it works inside.
+
+        No hard line breaks. The pane squeezes to 34 columns in a narrow
+        terminal, and pre-wrapped prose is clipped rather than reflowed.
+        """
+        body = Text()
+        body.append("Ask Lory\n\n", style="bold")
+        body.append(
+            "Answers are grounded in the finding you have selected: its "
+            "description, evidence, and knowledge base entry.\n\n",
             style="dim",
         )
-        intro.append("\nPress f on a finding, or type below.", style="dim")
-        return intro
+
+        for key, label in (
+            ("f", "Ask about this finding"),
+            ("t", "Trace it to local code"),
+        ):
+            body.append(f" {key} ", style="reverse bold")
+            body.append(f"  {label}\n", style="dim")
+
+        # The one control worth stating outright: whether source leaves here.
+        body.append(" c ", style="reverse bold")
+        body.append("  Send source: ", style="dim")
+        body.append(
+            "on\n" if self.send_code else "off\n",
+            style="bold yellow" if self.send_code else "dim",
+        )
+        return body
+
+    def refresh_lory_intro(self) -> None:
+        """Re-render the empty state, if it is still the only thing in the pane."""
+        intro = self.query("#lory-intro")
+        if intro:
+            intro.first(Static).update(self._lory_intro())
 
     # ── data ────────────────────────────────────────────────────────────────
 
@@ -367,6 +393,7 @@ class LoryApp(App[None]):
 
     def action_toggle_code_context(self) -> None:
         self.send_code = not self.send_code
+        self.refresh_lory_intro()
         self.set_status(
             "code context ON — source will be sent with fix requests"
             if self.send_code
@@ -408,16 +435,18 @@ class LoryApp(App[None]):
             max_context_lines=self.cfg.max_context_lines,
         )
 
+        label = f"Fix {finding.key} · {finding.title}"
         if request.included_code:
+            label += f"  (+{len(request.code_files)} file(s) of source)"
             self.push_screen(
                 ConfirmScreen(
                     f"Send source from {len(request.code_files)} file(s) to Lory?",
                     ", ".join(request.code_files),
                 ),
-                lambda ok: self.send_to_lory(request.prompt) if ok else None,
+                lambda ok: self.send_to_lory(request.prompt, label) if ok else None,
             )
         else:
-            self.send_to_lory(request.prompt)
+            self.send_to_lory(request.prompt, label)
 
     def action_mark_fixed(self) -> None:
         finding = self.current()
@@ -467,9 +496,16 @@ class LoryApp(App[None]):
 
     # ── Lory ────────────────────────────────────────────────────────────────
 
-    def send_to_lory(self, message: str) -> None:
+    def send_to_lory(self, message: str, label: str | None = None) -> None:
+        """Send a turn, echoing ``label`` in place of the raw prompt.
+
+        A finding-seeded ask builds a prompt twenty lines long. Echoing that
+        verbatim buries the answer below the fold and misattributes it: the
+        user pressed a key, they did not type it. What is actually sent stays
+        auditable through the confirmation gate and `lory fix --dry-run`.
+        """
         self.query_one("#lory-pane").add_class("visible")
-        self.append_lory(Text(f"› {message[:400]}", style="bold cyan"))
+        self.append_lory(Text(label or message[:400]), role="user")
         self.lory_worker(message)
 
     @work(thread=True, group="lory")
@@ -496,10 +532,21 @@ class LoryApp(App[None]):
             self.set_status, f"Lory replied in {reply.elapsed_ms / 1000:.1f}s"
         )
 
-    def append_lory(self, renderable: RenderableType) -> None:
-        """Append a reflowing Static to the Lory pane and scroll to it."""
+    def append_lory(self, renderable: RenderableType, role: str = "lory") -> None:
+        """Append one turn to the transcript and scroll to it.
+
+        Each turn carries a speaker label and a coloured left rule, so a long
+        remediation answer stays visibly separate from the question that
+        prompted it. The empty state is removed on the first turn rather than
+        left sitting at the top of the transcript.
+        """
         scroll = self.query_one("#lory-scroll", VerticalScroll)
-        scroll.mount(Static(renderable, classes="lory-message"))
+        self.query("#lory-intro").remove()
+
+        speaker = Text("you" if role == "user" else "lory", style="bold")
+        scroll.mount(
+            Static(Group(speaker, renderable), classes=f"lory-message from-{role}")
+        )
         scroll.scroll_end(animate=False)
 
     # ── misc ────────────────────────────────────────────────────────────────

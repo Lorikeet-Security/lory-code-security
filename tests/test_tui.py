@@ -160,6 +160,118 @@ async def test_changing_finding_does_discard_the_code_leads(monkeypatch, tmp_pat
 # ── triage state is per-finding, not per-id ─────────────────────────────────
 
 
+@pytest.mark.parametrize("width", [90, 100, 120, 160, 200])
+async def test_three_panes_fit_the_terminal(monkeypatch, tmp_path, width):
+    """The Lory pane used to run off the right edge, cropping its text mid-word.
+
+    Fixed pane widths plus the middle pane's min-width summed past the
+    terminal, and the compositor resolved the overflow by clipping the
+    rightmost pane. Text there looked like a wrapping bug; it was a layout one.
+    """
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+
+    async with app.run_test(size=(width, 26)) as pilot:
+        await pilot.pause()
+        await pilot.press("l")  # reveal the Lory pane
+        await pilot.pause()
+
+        panes = [
+            app.query_one(sel).size.width
+            for sel in ("#sidebar", "#detail-pane", "#lory-pane")
+        ]
+        assert all(w > 0 for w in panes), panes
+        assert sum(panes) <= width, f"panes {panes} sum past a {width}-column terminal"
+
+
+async def test_the_empty_state_wraps_rather_than_crops(monkeypatch, tmp_path):
+    """Every intro line must fit the pane, or words are lost off the edge."""
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+
+    async with app.run_test(size=(100, 26)) as pilot:
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+
+        pane = app.query_one("#lory-pane").size.width
+        intro = app.query_one("#lory-intro")
+        assert intro.size.width <= pane
+        # No hard newlines in the prose: they cannot reflow when the pane shrinks.
+        prose = str(app._lory_intro()).split("\n\n")[1]
+        assert "\n" not in prose
+
+
+async def test_the_empty_state_gives_way_to_the_transcript(monkeypatch, tmp_path):
+    """The intro used to sit at the top of every conversation forever."""
+    from rich.text import Text
+
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        assert app.query("#lory-intro")
+
+        app.append_lory(Text("an answer"), role="lory")
+        await pilot.pause()
+
+        assert not app.query("#lory-intro")
+        assert len(app.query(".lory-message")) == 1
+
+
+async def test_each_turn_is_labelled_with_its_speaker(monkeypatch, tmp_path):
+    from rich.text import Text
+
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        app.append_lory(Text("a question"), role="user")
+        app.append_lory(Text("an answer"), role="lory")
+        await pilot.pause()
+
+        classes = [set(w.classes) for w in app.query(".lory-message")]
+        assert "from-user" in classes[0]
+        assert "from-lory" in classes[1]
+
+
+async def test_a_seeded_ask_echoes_a_summary_not_the_whole_prompt(monkeypatch, tmp_path):
+    """Pressing `f` builds a long prompt the user never typed."""
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+    sent, echoed = [], []
+    monkeypatch.setattr(LoryApp, "lory_worker", lambda self, message: sent.append(message))
+    monkeypatch.setattr(
+        LoryApp, "append_lory",
+        lambda self, renderable, role="lory": echoed.append((role, str(renderable))),
+    )
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        await pilot.press("f")
+        await pilot.pause()
+
+    # The full prompt still goes to Lory...
+    assert "I need to fix a security finding" in sent[0]
+    assert len(sent[0]) > 200  # ...the whole assembled thing, not the summary
+
+    # ...but the transcript shows the one-line summary.
+    role, rendered = echoed[0]
+    assert role == "user"
+    assert rendered == "Fix pentest-12 · SQL injection"
+    assert "I need to fix" not in rendered
+
+
+async def test_toggling_code_context_updates_the_empty_state(monkeypatch, tmp_path):
+    app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
+
+    async with app.run_test(size=(160, 40)) as pilot:
+        await pilot.pause()
+        assert "off" in str(app._lory_intro())
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.send_code
+        assert "on" in str(app._lory_intro())
+
+
 async def test_marking_one_finding_does_not_mark_its_id_twin(monkeypatch, tmp_path):
     app = make_app(monkeypatch, tmp_path, StubStore(COLLIDING_ROWS))
 

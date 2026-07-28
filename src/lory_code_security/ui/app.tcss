@@ -24,10 +24,17 @@ Screen {
 
 /* -- left: the finding list ---------------------------------------------- */
 
+/* The three panes must fit the terminal, not the sum of their preferred
+ * widths. A fixed sidebar plus a fixed Lory pane left the middle pane's
+ * min-width unsatisfiable on a narrow terminal, and the compositor resolved
+ * that by running the rightmost pane off the edge: text there was cropped
+ * mid-word and read as a wrapping bug. The two content panes now share the
+ * remainder as fractions, and every minimum is small enough that all three
+ * fit side by side at 100 columns. */
 #sidebar {
-    width: 44;
-    min-width: 30;
-    max-width: 60;
+    width: 1fr;
+    min-width: 26;
+    max-width: 48;
     border-right: solid $panel-lighten-2;
 }
 
@@ -54,7 +61,7 @@ Screen {
 
 #detail-pane {
     width: 1fr;
-    min-width: 40;
+    min-width: 30;
 }
 
 #detail-scroll {
@@ -72,9 +79,9 @@ Screen {
 /* -- right: Lory --------------------------------------------------------- */
 
 #lory-pane {
-    width: 54;
+    width: 1fr;
     min-width: 34;
-    max-width: 80;
+    max-width: 64;
     border-left: solid $panel-lighten-2;
     display: none;
 }
@@ -85,30 +92,57 @@ Screen {
 
 #lory-scroll {
     height: 1fr;
-    padding: 0 1;
+    padding: 1 1 0 1;
     overflow-x: hidden;
     scrollbar-size-vertical: 1;
 }
 
+/* The empty state stays top-aligned and wraps naturally.
+ *
+ * Centring it was tried and reverted: both `content-align` and container
+ * `align` size the child to its natural width, so the paragraph overflowed
+ * the pane and was clipped at its 34-column minimum rather than wrapping. A
+ * readable invitation beats a vertically centred one. */
 #lory-intro {
     width: 1fr;
     height: auto;
 }
 
+/* Each turn hangs off a coloured rule: the transcript's spine. Whose turn it
+ * is has to survive a fifty-line answer scrolling past. */
 .lory-message {
     width: 1fr;
     height: auto;
     margin-bottom: 1;
+    padding: 0 0 0 1;
+    border-left: solid $panel-lighten-2;
+}
+
+.lory-message.from-user {
+    border-left: solid $panel-lighten-3;
+    color: $text-muted;
+}
+
+.lory-message.from-lory {
+    border-left: solid $accent;
 }
 
 #lory-input {
     border: none;
+    border-top: solid $panel-lighten-2;
     background: $panel;
     height: 3;
 }
 
+#lory-input:focus {
+    border-top: solid $accent;
+    background: $panel-lighten-1;
+}
+
 /* -- chrome -------------------------------------------------------------- */
 
+/* Titles carry an accent marker rather than a full-width rule beneath them: a
+ * band across all three panes drew more attention than the labels did. */
 .pane-title {
     height: 1;
     padding: 0 1;
