@@ -46,6 +46,11 @@ from lory_code_security.domain.findings import (
 )
 from lory_code_security.ui import render
 
+#: Shown when an action needs a finding and the table has none highlighted —
+#: an empty filter result, or an account with nothing on it. Silence there read
+#: as a dead key.
+_NO_SELECTION = "no finding selected"
+
 SEVERITY_COLOURS = {
     "critical": "bold white on red",
     "high": "bold red",
@@ -120,6 +125,11 @@ class LoryApp(App[None]):
         self.code_matches_key: str | None = None
         self.filter_text = ""
         self.send_code = cfg.send_code_context
+        #: Set while a table rebuild is putting the cursor back where the user
+        #: left it. Clearing the table drops the cursor to row 0 and fires
+        #: RowHighlighted for a row nobody selected; acting on that event moves
+        #: the selection and discards the trace. See :meth:`apply_filter`.
+        self._restoring_key: str | None = None
 
     # ── layout ──────────────────────────────────────────────────────────────
 
@@ -260,25 +270,41 @@ class LoryApp(App[None]):
         if detail:
             body.append(f"\n{detail}", style="dim")
         self.query_one("#detail", Static).update(body)
-        self.query_one("#counts", Static).update("0 findings")
+        self._update_counts(0)
         self.set_status(headline)
 
     def set_findings(self, rows: list[Finding], source: str) -> None:
         self.all_findings = rows
         self.apply_filter()
-        counts = severity_counts(rows)
+        self.set_status(f"{len(rows)} findings via {source}")
+
+    def _update_counts(self, visible: int) -> None:
+        """The counts line: severity mix of the account, and how much is shown.
+
+        The severity breakdown always describes the whole account — it is the
+        shape of the backlog, not of the current filter. The leading count does
+        track the filter, because "22 findings" above three visible rows reads
+        as a bug in the filter.
+        """
+        counts = severity_counts(self.all_findings)
         summary = "  ".join(
             f"{counts[s]} {s[0].upper()}"
             for s in ("critical", "high", "medium", "low", "info")
             if counts.get(s)
         )
-        self.query_one("#counts", Static).update(f"{len(rows)} findings   {summary}")
-        self.set_status(f"{len(rows)} findings via {source}")
+        total = len(self.all_findings)
+        shown = f"{visible} of {total} findings" if visible != total else f"{total} findings"
+        self.query_one("#counts", Static).update(f"{shown}   {summary}")
 
     def apply_filter(self) -> None:
         rows = filter_findings(self.all_findings, query=self.filter_text)
 
         table = self.query_one("#findings-table", DataTable)
+        # `clear()` resets the cursor to row 0 and re-fires RowHighlighted, so
+        # the selection has to be captured before the rebuild and put back
+        # after it. Without this, marking or refreshing from any row but the
+        # first threw the user back to the top of the list.
+        keep = self.selected_key
         table.clear()
         for finding in rows:
             state = self.triage.state(finding.key)
@@ -297,7 +323,34 @@ class LoryApp(App[None]):
                 # the moment two stores each held a finding with the same id.
                 key=finding.key,
             )
-        if rows and self.selected_key is None:
+
+        self._update_counts(len(rows))
+
+        if not rows:
+            # Nothing is selectable. Leaving `selected_key` pointing at a row
+            # that is no longer on screen let f/t/m/R act on a finding the user
+            # could not see — including filing a retest for it.
+            self.selected_key = None
+            self.code_matches = []
+            self.code_matches_key = None
+            self._restoring_key = None
+            self.show_empty(
+                f"No finding matches {self.filter_text!r}."
+                if self.filter_text
+                else "No findings to show.",
+                "Press esc to clear the filter." if self.filter_text else "",
+            )
+            return
+
+        keys = [f.key for f in rows]
+        if keep in keys:
+            index = keys.index(keep)
+            # Row 0 is where the rebuild already left the cursor; moving to it
+            # would fire no event, and the guard would never be released.
+            if index:
+                self._restoring_key = keep
+                table.move_cursor(row=index, animate=False)
+        else:
             self.selected_key = rows[0].key
             self.show_detail(rows[0])
 
@@ -312,7 +365,17 @@ class LoryApp(App[None]):
     def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         if event.row_key is None or event.row_key.value is None:
             return
-        self.selected_key = str(event.row_key.value)
+        key = str(event.row_key.value)
+
+        # A rebuild emits a highlight for row 0 before the cursor is put back.
+        # That is not a move the user made, so ignore everything until the
+        # restored row arrives.
+        if self._restoring_key is not None:
+            if key != self._restoring_key:
+                return
+            self._restoring_key = None
+
+        self.selected_key = key
         # Drop code leads only when the selection genuinely moved. Rebuilding
         # the table (filter, mark-fixed) re-fires this for the same row, and
         # discarding the trace there loses work the user just did.
@@ -403,6 +466,7 @@ class LoryApp(App[None]):
     def action_trace_code(self) -> None:
         finding = self.current()
         if finding is None:
+            self.set_status(_NO_SELECTION)
             return
         self.set_status("searching the working tree…")
         self.trace_worker(finding)
@@ -423,6 +487,7 @@ class LoryApp(App[None]):
     def action_ask_lory(self) -> None:
         finding = self.current()
         if finding is None:
+            self.set_status(_NO_SELECTION)
             return
 
         self.query_one("#lory-pane").add_class("visible")
@@ -451,6 +516,7 @@ class LoryApp(App[None]):
     def action_mark_fixed(self) -> None:
         finding = self.current()
         if finding is None:
+            self.set_status(_NO_SELECTION)
             return
         state = "new" if self.triage.state(finding.key) == "fixed" else "fixed"
         self.triage.set_state(finding.key, state)
@@ -459,7 +525,11 @@ class LoryApp(App[None]):
 
     def action_request_retest(self) -> None:
         finding = self.current()
-        if finding is None or self.store is None:
+        if finding is None:
+            self.set_status(_NO_SELECTION)
+            return
+        if self.store is None:
+            self.set_status("no read path configured — run `lory init`")
             return
         self.push_screen(
             ConfirmScreen(
@@ -479,20 +549,41 @@ class LoryApp(App[None]):
         self.call_from_thread(self.set_status, f"retest requested for {finding.key}")
 
     def action_open_editor(self) -> None:
-        """Open the top code lead in $EDITOR, suspending the TUI."""
+        """Open the top code lead in $EDITOR, suspending the TUI.
+
+        ``$EDITOR`` is a command line, not a program name: ``code -w`` and
+        ``emacsclient -nw`` are both common. Running it unsplit looked for a
+        program literally called ``code -w``, and the resulting
+        FileNotFoundError propagated out of the action and took the whole
+        cockpit down with it — losing the session over a typo in an env var.
+        """
         import os
+        import shlex
         import subprocess
+
+        from textual.app import SuspendNotSupported
 
         if not self.code_matches:
             self.set_status("no code leads yet — press t to trace")
             return
 
-        editor = os.environ.get("EDITOR", "vi")
+        editor = os.environ.get("EDITOR", "").strip() or "vi"
+        try:
+            command = shlex.split(editor)
+        except ValueError:  # an unbalanced quote in $EDITOR
+            command = [editor]
+        if not command:
+            command = ["vi"]
+
         match = self.code_matches[0]
-        with self.suspend():
-            subprocess.run(
-                [editor, *_editor_target(editor, match.path, match.line)], check=False
-            )
+        argv = [*command, *_editor_target(command[0], match.path, match.line)]
+        try:
+            with self.suspend():
+                subprocess.run(argv, check=False)
+        except SuspendNotSupported:
+            self.set_status(f"cannot suspend to run {command[0]} on this terminal")
+        except OSError as exc:
+            self.set_status(f"could not run $EDITOR ({command[0]}): {exc}")
 
     # ── Lory ────────────────────────────────────────────────────────────────
 
