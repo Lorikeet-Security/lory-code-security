@@ -427,8 +427,32 @@ class FindingStore:
             args["note"] = note[:2000]
 
         result = self.client.call_tool("retest.request", args)
-        result.raise_for_error()
+        try:
+            result.raise_for_error()
+        except ToolError as exc:
+            raise self._explain_retest_failure(exc, finding, args) from exc
         return result.structured if isinstance(result.structured, dict) else {"raw": result.text}
+
+    @staticmethod
+    def _explain_retest_failure(
+        exc: ToolError, finding: Finding, args: dict[str, Any]
+    ) -> ToolError:
+        """Say *why* a retest bounced when the cause is the id/ref mismatch.
+
+        A server whose ``retest.request`` takes only ``finding_id`` resolves
+        that integer in one store. Ids repeat across stores, so a retest for
+        ``engagement-1652`` arrives as ``1652`` and is looked up among manual
+        pentest findings, which answers "Finding not found" — a message that
+        reads like the finding was deleted rather than mis-addressed.
+        """
+        if "ref" in args or not finding.ref or "not found" not in str(exc).lower():
+            return exc
+        return ToolError(
+            f"{exc} — this server's retest.request takes a numeric finding_id "
+            f"only, so it looked up #{finding.id} in the wrong store. "
+            f"{finding.key} cannot be retested over MCP until the tool accepts "
+            f"a ref; request it from the portal instead."
+        )
 
     def search_kb(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Look the finding class up in the vulnerability knowledge base."""

@@ -312,6 +312,23 @@ lory tui
 
 Network calls run in background workers, so the UI never blocks on the platform.
 
+Your place in the list is yours: marking, refreshing, and filtering all keep the
+row you were on and the code leads you traced for it, rather than throwing you
+back to the top. A filter that matches nothing selects nothing — the action keys
+say so instead of quietly acting on a finding scrolled off screen.
+
+`e` takes `$EDITOR` as a command line, so `EDITOR="code -w"` and
+`EDITOR="emacsclient -nw"` work; an editor that will not start is reported in
+the status bar rather than taking the cockpit down.
+
+> **`R` needs a server that addresses findings by `ref`.** The platform's
+> `retest.request` currently accepts a bare numeric `finding_id`, which it
+> resolves in the manual pentest store only. A retest for an engagement or
+> incident finding therefore comes back `Finding not found` — the finding is
+> fine, the request could not name it. The status bar says as much when it
+> happens. Until the tool takes a `ref`, request those retests from the portal.
+> `lory mcp tools` shows what your server accepts today.
+
 ---
 
 ## Command reference
@@ -344,6 +361,10 @@ lory harness checks            List available assertions
 `<ref>` is a finding's prefixed ref (`engagement-12`) or a bare id (`12`). A
 bare id that names findings in more than one store is rejected with the list of
 refs to choose from, rather than resolved by guessing.
+
+`lory retest` can only address findings the server's own `retest.request`
+resolves — see [the caveat above](#the-cockpit). It sends the `ref` where the
+tool's schema declares one, and explains the mismatch where it does not.
 
 A typical session:
 
@@ -566,7 +587,7 @@ A config written for the older session-cookie build still loads: `session_cookie
 
 ```bash
 pip install -e ".[dev]"
-pytest                        # 119 tests, no network required
+pytest                        # 205 tests, no network required
 ruff check src tests
 lory harness lint scenarios/  # validate scenarios without calling Lory
 ```

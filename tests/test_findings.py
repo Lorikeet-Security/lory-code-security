@@ -366,3 +366,34 @@ def test_retest_sends_the_ref_only_where_the_schema_takes_it(tmp_path):
                      schemas={"retest.request": ["finding_id", "ref", "note"]})
     FindingStore(modern, cache_path=tmp_path / "b.json").request_retest(finding)
     assert modern.calls[-1] == ("retest.request", {"finding_id": 12, "ref": "engagement-12"})
+
+
+def test_a_retest_that_cannot_address_the_store_says_so(tmp_path):
+    """"Finding not found" reads as *deleted*; the real cause is the bare id.
+
+    A server whose retest.request takes only ``finding_id`` resolves that
+    integer in one store. An engagement finding therefore bounces even though
+    it is right there in the list.
+    """
+    client = FakeMcp({"retest.request"}, [], is_error=True, error_text="Finding not found")
+    store = FindingStore(client, cache_path=tmp_path / "c.json")
+
+    with pytest.raises(ToolError) as excinfo:
+        store.request_retest(Finding(id=1652, ref="engagement-1652", store="engagement"))
+
+    message = str(excinfo.value)
+    assert "Finding not found" in message      # the server's own words survive
+    assert "wrong store" in message            # ...plus why
+    assert "engagement-1652" in message
+
+
+def test_an_unrelated_retest_failure_is_not_reinterpreted(tmp_path):
+    """Only the id/ref mismatch gets the extra explanation."""
+    client = FakeMcp({"retest.request"}, [], is_error=True,
+                     error_text="retest denied: engagement is closed")
+    store = FindingStore(client, cache_path=tmp_path / "d.json")
+
+    with pytest.raises(ToolError) as excinfo:
+        store.request_retest(Finding(id=12, ref="engagement-12", store="engagement"))
+
+    assert "wrong store" not in str(excinfo.value)
